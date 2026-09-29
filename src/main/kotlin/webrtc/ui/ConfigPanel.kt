@@ -1,0 +1,316 @@
+package webrtc.ui
+
+import burp.api.montoya.MontoyaApi
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import webrtc.config.ConfigStore
+import webrtc.config.IdentityProfile
+import webrtc.config.WebRtcConfig
+import java.awt.BorderLayout
+import java.awt.Dimension
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
+import java.awt.Insets
+import java.io.File
+import javax.swing.*
+
+/**
+ * M0 view — all engagement-specific config. Nothing is seeded.
+ *
+ * The panel is split into a small **Basic** section (the few things a tester
+ * must set) and a collapsed **Advanced** section that is auto-configured with
+ * working defaults; advanced users can reveal and change it. Every setting has a
+ * "?" help button explaining it in plain English with an example.
+ */
+class ConfigPanel(
+    private val api: MontoyaApi,
+    private val configStore: ConfigStore,
+    private val onSaved: () -> Unit
+) : JPanel(BorderLayout()) {
+
+    private val json = Json { prettyPrint = true; ignoreUnknownKeys = true; encodeDefaults = true }
+
+    private val injectionEnabled = JCheckBox("Enable agent injection")
+    private val stripCsp = JCheckBox("Strip CSP on injected responses")
+    private val hostAllowList = JTextArea(4, 40)
+    private val bridgeHost = JTextField(16)
+    private val bridgePort = JTextField(6)
+    private val collectPath = JTextField(16)
+    private val commandPath = JTextField(16)
+    private val agentJsPath = JTextField(40)
+    private val identitiesJson = JTextArea(10, 60)
+    private val identifierKeys = JTextArea(3, 40)
+    private val status = JLabel(" ")
+
+    private val advancedPanel = JPanel(GridBagLayout())
+    private val showAdvanced = JCheckBox("Show advanced settings (bridge address, paths, agent override)")
+
+    init {
+        val sections = Box.createVerticalBox()
+        sections.add(buildBasicSection())
+        sections.add(buildAuthzSection())
+        sections.add(buildAdvancedSection())
+
+        val buttons = JPanel().apply {
+            add(JButton("Save").apply { addActionListener { save() } })
+            add(JButton("Reload").apply { addActionListener { load() } })
+            add(JButton("Check configuration").apply { addActionListener { checkConfig(showIfClean = true) } })
+            add(status)
+        }
+
+        add(JScrollPane(sections), BorderLayout.CENTER)
+        add(buttons, BorderLayout.SOUTH)
+
+        load()
+    }
+
+    // ---- sections -------------------------------------------------------
+
+    private fun titled(title: String): JPanel = JPanel(GridBagLayout()).apply {
+        border = BorderFactory.createTitledBorder(title)
+    }
+
+    private fun row(panel: JPanel, r: Int, label: String, comp: JComponent, help: JButton?) {
+        val c = GridBagConstraints().apply {
+            insets = Insets(4, 6, 4, 6); anchor = GridBagConstraints.WEST; fill = GridBagConstraints.HORIZONTAL
+        }
+        c.gridx = 0; c.gridy = r; c.weightx = 0.0
+        panel.add(JLabel(label), c)
+        c.gridx = 1; c.weightx = 1.0
+        panel.add(comp, c)
+        c.gridx = 2; c.weightx = 0.0; c.fill = GridBagConstraints.NONE
+        panel.add(help ?: JLabel(" "), c)
+    }
+
+    private fun wideRow(panel: JPanel, r: Int, comp: JComponent) {
+        val c = GridBagConstraints().apply {
+            insets = Insets(4, 6, 4, 6); anchor = GridBagConstraints.WEST
+            fill = GridBagConstraints.HORIZONTAL; gridx = 0; gridy = r; gridwidth = 3; weightx = 1.0
+        }
+        panel.add(comp, c)
+    }
+
+    private fun buildBasicSection(): JPanel {
+        val p = titled("Basic — what most engagements need")
+        var r = 0
+        wideRow(p, r++, injectionRow())
+        wideRow(p, r++, stripCspRow())
+        row(p, r++, "Host allow-list (one per line, or 'all'):", JScrollPane(hostAllowList), HelpUi.button(
+            "Host allow-list",
+            "The hostnames the agent may be injected into — one per line. This is a second guardrail on top of Burp Target scope: a page is only touched if its host matches here AND the full URL is in Burp Target scope. Enter 'all' on its own line to allow every in-scope host.",
+            "meet.example.com\napp.example.com\n\n…or a single line to allow every in-scope host:\nall"
+        ))
+        return p
+    }
+
+    private fun injectionRow(): JPanel = JPanel(BorderLayout()).apply {
+        add(injectionEnabled, BorderLayout.WEST)
+        add(HelpUi.button(
+            "Enable agent injection",
+            "Master on/off switch. When ON, Burp inserts the WebRTC test agent into pages you load — but only for hosts in the allow-list that are also inside Burp Target scope. Leave OFF to browse the app untouched.",
+            "Typical flow: fill the host allow-list, add the site to Burp Target scope, then turn this on and reload the page."
+        ), BorderLayout.CENTER)
+    }
+
+    private fun stripCspRow(): JPanel = JPanel(BorderLayout()).apply {
+        add(stripCsp, BorderLayout.WEST)
+        add(HelpUi.button(
+            "Strip CSP on injected responses",
+            "Removes Content-Security-Policy headers (and CSP <meta> tags) from pages the agent is injected into. Strict WebRTC apps often ship a CSP that blocks inline scripts, which would stop the agent from loading. Leave ON unless you specifically need the app's CSP intact.",
+            "A page returning `Content-Security-Policy: script-src 'self'` would block the agent; stripping it lets the agent run. Note this also lowers the app's own XSS protection on those responses — expected during a test, not something to leave on afterwards."
+        ), BorderLayout.CENTER)
+    }
+
+    private fun buildAuthzSection(): JPanel {
+        val p = titled("Identities & identifiers — for the Authz Matrix (M5)")
+        var r = 0
+        row(p, r++, "Identifier keys (one per line):", JScrollPane(identifierKeys), HelpUi.button(
+            "Identifier keys",
+            "The names of ID fields that appear in the app's traffic and point at a user or resource — for example a user ID, room ID, or meeting ID. The Authz Matrix (M5) swaps these values between identities to test for broken access control (IDOR).",
+            "userId\nroomId\nmeetingId\n\nThe matrix can take a request containing roomId=500 captured as Alice and replay it as Bob, to check whether Bob can reach Alice's room."
+        ))
+        row(p, r++, "Identities (JSON array):", JScrollPane(identitiesJson).apply { preferredSize = Dimension(600, 200) }, HelpUi.button(
+            "Identities (JSON array)",
+            "The accounts the Authz Matrix replays requests as. A JSON array where each entry has a name, the headers that authenticate that account (cookies/tokens), and that account's value for each identifier key above. Credentials live only in the Burp project file.",
+            "[\n" +
+                "  {\n" +
+                "    \"name\": \"alice\",\n" +
+                "    \"headers\": { \"Cookie\": \"session=ALICE_SESSION\" },\n" +
+                "    \"identifiers\": { \"userId\": \"1001\", \"roomId\": \"500\" }\n" +
+                "  },\n" +
+                "  {\n" +
+                "    \"name\": \"bob\",\n" +
+                "    \"headers\": { \"Authorization\": \"Bearer BOB_TOKEN\" },\n" +
+                "    \"identifiers\": { \"userId\": \"1002\", \"roomId\": \"600\" }\n" +
+                "  }\n" +
+                "]\n\n" +
+                "The matrix replays each captured request as alice, as bob, and with no auth. A cross-principal 2xx — e.g. bob's session returning alice's resource — is flagged as broken access control."
+        ))
+        return p
+    }
+
+    private fun buildAdvancedSection(): JPanel {
+        val wrapper = JPanel(BorderLayout()).apply { border = BorderFactory.createTitledBorder("Advanced — auto-configured, change only if needed") }
+
+        showAdvanced.addActionListener {
+            advancedPanel.isVisible = showAdvanced.isSelected
+            revalidate(); repaint()
+        }
+
+        var r = 0
+        row(advancedPanel, r++, "Bridge host:", bridgeHost, HelpUi.button(
+            "Bridge host",
+            "The local address the extension's telemetry bridge listens on. The injected agent sends SDP / ICE / DataChannel data here. 127.0.0.1 (localhost only) is correct almost always — keep it on localhost so the bridge is never exposed to the network."
+        ))
+        row(advancedPanel, r++, "Bridge port:", bridgePort, HelpUi.button(
+            "Bridge port",
+            "TCP port for the local telemetry bridge. Default 8777. Change only if another program already uses 8777 on your machine.",
+            "If Burp logs a bind error on 8777, set 8788 here and Save; the bridge restarts on the new port."
+        ))
+        row(advancedPanel, r++, "Collect path:", collectPath, HelpUi.button(
+            "Collect path",
+            "The URL path on the local bridge where the agent posts its telemetry beacons (SDP, ICE, ciphers, DataChannel events). The default /collect is fine — change it only in the rare case it would collide with a path the app under test uses."
+        ))
+        row(advancedPanel, r++, "Command path:", commandPath, HelpUi.button(
+            "Command path",
+            "The URL path on the local bridge where the agent fetches commands to run (SDP mutation rules, DataChannel fuzz, ICE probes). The default /command is fine — change it only to avoid a collision with the app's own paths."
+        ))
+        val agentRow = JPanel(BorderLayout())
+        agentRow.add(agentJsPath, BorderLayout.CENTER)
+        agentRow.add(JButton("Browse...").apply { addActionListener { browseAgent() } }, BorderLayout.EAST)
+        row(advancedPanel, r++, "Agent JS override:", agentRow, HelpUi.button(
+            "Agent JS override",
+            "Blank = use the agent bundled inside the jar (recommended, and the normal setting). Set a file path only if you are editing the agent yourself and want Burp to load your working copy instead of the bundled one.",
+            "C:\\Projects\\WebRTC\\agent\\webrtc-agent.js"
+        ))
+        wideRow(advancedPanel, r++, JButton("Restore recommended defaults").apply { addActionListener { restoreAdvancedDefaults() } })
+
+        advancedPanel.isVisible = false
+        wrapper.add(showAdvanced, BorderLayout.NORTH)
+        wrapper.add(advancedPanel, BorderLayout.CENTER)
+        return wrapper
+    }
+
+    // ---- actions --------------------------------------------------------
+
+    private fun browseAgent() {
+        val chooser = JFileChooser()
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            agentJsPath.text = chooser.selectedFile.absolutePath
+        }
+    }
+
+    private fun restoreAdvancedDefaults() {
+        val d = WebRtcConfig()
+        bridgeHost.text = d.bridgeHost
+        bridgePort.text = d.bridgePort.toString()
+        collectPath.text = d.collectPath
+        commandPath.text = d.commandPath
+        agentJsPath.text = d.agentJsPath
+        status.text = "advanced settings reset to defaults — Save to apply"
+    }
+
+    private fun load() {
+        val cfg = configStore.config
+        injectionEnabled.isSelected = cfg.injectionEnabled
+        stripCsp.isSelected = cfg.stripCsp
+        hostAllowList.text = cfg.hostAllowList.joinToString("\n")
+        bridgeHost.text = cfg.bridgeHost
+        bridgePort.text = cfg.bridgePort.toString()
+        collectPath.text = cfg.collectPath
+        commandPath.text = cfg.commandPath
+        agentJsPath.text = cfg.agentJsPath
+        identifierKeys.text = cfg.identifierKeys.joinToString("\n")
+        identitiesJson.text = json.encodeToString(ListSerializer(IdentityProfile.serializer()), cfg.identities)
+        status.text = "loaded"
+    }
+
+    private fun save() {
+        try {
+            val identities = if (identitiesJson.text.isBlank()) emptyList()
+            else json.decodeFromString(ListSerializer(IdentityProfile.serializer()), identitiesJson.text)
+
+            val cfg = configStore.config.copy(
+                injectionEnabled = injectionEnabled.isSelected,
+                stripCsp = stripCsp.isSelected,
+                hostAllowList = lines(hostAllowList.text),
+                bridgeHost = bridgeHost.text.trim().ifBlank { "127.0.0.1" },
+                bridgePort = bridgePort.text.trim().toIntOrNull() ?: 8777,
+                collectPath = collectPath.text.trim().ifBlank { "/collect" },
+                commandPath = commandPath.text.trim().ifBlank { "/command" },
+                agentJsPath = agentJsPath.text.trim(),
+                identities = identities,
+                identifierKeys = lines(identifierKeys.text)
+            )
+            configStore.save(cfg)
+            onSaved()
+            status.text = "saved — bridge restarted"
+            // Non-blocking readiness check; save already succeeded.
+            checkConfig(showIfClean = false)
+        } catch (t: Throwable) {
+            api.logging().logToError("[config] save failed: ${t.message}")
+            JOptionPane.showMessageDialog(this, "Save failed: ${t.message}", "Config error", JOptionPane.ERROR_MESSAGE)
+        }
+    }
+
+    /**
+     * Automated sanity check over the current field values, reported in plain
+     * English. Returns true when nothing needs the tester's attention.
+     */
+    private fun checkConfig(showIfClean: Boolean): Boolean {
+        val problems = mutableListOf<String>()
+        val notes = mutableListOf<String>()
+
+        val hosts = lines(hostAllowList.text)
+        val port = bridgePort.text.trim().toIntOrNull()
+
+        if (injectionEnabled.isSelected && hosts.isEmpty())
+            problems += "Injection is ON but the host allow-list is empty, so nothing will be injected. Add the app's hostname (or 'all')."
+        if (port == null || port !in 1..65535)
+            problems += "Bridge port must be a whole number between 1 and 65535."
+        val idErr = runCatching {
+            if (identitiesJson.text.isNotBlank())
+                json.decodeFromString(ListSerializer(IdentityProfile.serializer()), identitiesJson.text)
+        }.exceptionOrNull()
+        if (idErr != null)
+            problems += "Identities JSON does not parse: ${idErr.message}"
+        if (agentJsPath.text.isNotBlank() && !File(agentJsPath.text.trim()).isFile)
+            problems += "Agent JS override points at a file that doesn't exist. Leave it blank to use the bundled agent."
+
+        if (hosts.any { it.equals("all", ignoreCase = true) })
+            notes += "'all' allows injection into every in-scope host. Fine for a broad test; list specific hosts to be more precise."
+        if (!injectionEnabled.isSelected)
+            notes += "Injection is OFF — pages are browsed untouched until you enable it."
+        if (!stripCsp.isSelected)
+            notes += "Strip CSP is OFF — a strict Content-Security-Policy on the target may block the agent from loading."
+
+        val clean = problems.isEmpty()
+        if (clean && notes.isEmpty()) {
+            status.text = "configuration OK"
+            if (showIfClean)
+                JOptionPane.showMessageDialog(this, "Configuration looks good.", "Check configuration", JOptionPane.INFORMATION_MESSAGE)
+            return true
+        }
+
+        if (!clean || showIfClean || notes.isNotEmpty()) {
+            val msg = buildString {
+                if (problems.isNotEmpty()) {
+                    append("Needs attention:\n")
+                    problems.forEach { append("  • ").append(it).append('\n') }
+                }
+                if (notes.isNotEmpty()) {
+                    if (isNotEmpty()) append('\n')
+                    append("For your information:\n")
+                    notes.forEach { append("  • ").append(it).append('\n') }
+                }
+            }
+            val kind = if (clean) JOptionPane.INFORMATION_MESSAGE else JOptionPane.WARNING_MESSAGE
+            JOptionPane.showMessageDialog(this, msg.trimEnd(), "Check configuration", kind)
+            status.text = if (clean) "configuration OK (see notes)" else "configuration needs attention"
+        }
+        return clean
+    }
+
+    private fun lines(text: String): List<String> =
+        text.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
+}

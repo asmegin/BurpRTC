@@ -1,0 +1,16 @@
+# Build output and caches
+build/
+.gradle/
+.kotlin/
+
+# Local contributor notes — not published to the repository
+AGENTS.md
+
+# IDE / OS
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.DS_Store
+Thumbs.db

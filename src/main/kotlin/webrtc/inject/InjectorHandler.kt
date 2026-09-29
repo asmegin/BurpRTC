@@ -1,0 +1,97 @@
+package webrtc.inject
+
+import burp.api.montoya.MontoyaApi
+import burp.api.montoya.http.handler.HttpHandler
+import burp.api.montoya.http.handler.HttpRequestToBeSent
+import burp.api.montoya.http.handler.HttpResponseReceived
+import burp.api.montoya.http.handler.RequestToBeSentAction
+import burp.api.montoya.http.handler.ResponseReceivedAction
+import burp.api.montoya.http.message.responses.HttpResponse
+import webrtc.config.ConfigStore
+import webrtc.config.WebRtcConfig
+import webrtc.scope.ScopeGate
+import webrtc.workflow.RequestCatalog
+import java.io.File
+import java.nio.charset.StandardCharsets
+
+/**
+ * M1 — injects the browser agent before </head> on allow-listed, in-scope HTML
+ * responses and strips CSP so the inline agent runs.
+ */
+class InjectorHandler(
+    private val api: MontoyaApi,
+    private val configStore: ConfigStore,
+    private val scope: ScopeGate,
+    private val requests: RequestCatalog? = null
+) : HttpHandler {
+
+    private val metaCspRegex =
+        Regex("(?is)<meta[^>]+http-equiv=[\"']?content-security-policy[\"']?[^>]*>")
+
+    override fun handleHttpRequestToBeSent(req: HttpRequestToBeSent): RequestToBeSentAction =
+        RequestToBeSentAction.continueWith(req)
+
+    override fun handleHttpResponseReceived(resp: HttpResponseReceived): ResponseReceivedAction {
+        val cfg = configStore.config
+        if (!cfg.injectionEnabled) return ResponseReceivedAction.continueWith(resp)
+
+        val request = resp.initiatingRequest()
+        val host = request.httpService().host()
+        val url = request.url()
+
+        if (!ScopeGate.hostAllowed(host, cfg.hostAllowList)) return ResponseReceivedAction.continueWith(resp)
+        if (!scope.inScope(url)) return ResponseReceivedAction.continueWith(resp)
+
+        val contentType = resp.headerValue("Content-Type") ?: ""
+        requests?.observe(request, contentType, resp.statusCode().toInt())
+        if (!contentType.contains("text/html", ignoreCase = true)) {
+            return ResponseReceivedAction.continueWith(resp)
+        }
+
+        var out: HttpResponse = resp
+        if (cfg.stripCsp) {
+            out = out.withRemovedHeader("Content-Security-Policy")
+                .withRemovedHeader("Content-Security-Policy-Report-Only")
+        }
+
+        val agent = buildAgentScript(cfg) ?: return ResponseReceivedAction.continueWith(out)
+
+        var bodyStr = out.bodyToString()
+        if (cfg.stripCsp) bodyStr = metaCspRegex.replace(bodyStr, "")
+
+        val idx = indexOfIgnoreCase(bodyStr, "</head>")
+        val injected = if (idx >= 0) {
+            bodyStr.substring(0, idx) + agent + bodyStr.substring(idx)
+        } else {
+            agent + bodyStr
+        }
+        out = out.withBody(injected)
+        api.logging().logToOutput("[inject] agent injected into $url")
+        return ResponseReceivedAction.continueWith(out)
+    }
+
+    private fun buildAgentScript(cfg: WebRtcConfig): String? {
+        val agentSrc = if (cfg.agentJsPath.isBlank()) {
+            javaClass.getResourceAsStream("/agent/webrtc-agent.js")?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+                ?: run { api.logging().logToError("[inject] bundled agent missing; rebuild the jar"); return null }
+        } else {
+            val f = File(cfg.agentJsPath)
+            if (!f.isFile) { api.logging().logToError("[inject] agent JS not found: ${cfg.agentJsPath}"); return null }
+            f.readText(StandardCharsets.UTF_8)
+        }
+        val bridgeBase = "http://${cfg.bridgeHost}:${cfg.bridgePort}"
+        val cfgJs = """
+            window.__WRTC_CFG__ = {
+              collect: ${jsonStr(bridgeBase + cfg.collectPath)},
+              command: ${jsonStr(bridgeBase + cfg.commandPath)}
+            };
+        """.trimIndent()
+        return "\n<script>\n$cfgJs\n$agentSrc\n</script>\n"
+    }
+
+    private fun indexOfIgnoreCase(haystack: String, needle: String): Int =
+        haystack.indexOf(needle, ignoreCase = true)
+
+    private fun jsonStr(s: String): String =
+        "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
