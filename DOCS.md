@@ -11,18 +11,35 @@ configuration (Module 0), persisted in the Burp project file.
 > ICE probing, replay) is gated on Burp **Target scope**. Credentials live only
 > in the Burp project file.
 
-## Current status (2026-09-29)
+## Current status (2026-10-01)
 
-**Version 1.0.0.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.0.0**. `./gradlew shadowJar` builds successfully, the agent passes
-`node --check agent/webrtc-agent.js`, and the full suites pass: **70 JVM tests**
+**Version 1.0.1.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
+**1.0.1**. `./gradlew shadowJar` builds successfully, the agent passes
+`node --check agent/webrtc-agent.js`, and the full suites pass: **76 JVM tests**
 (`gradlew test`) and **30 agent tests** (`node --test agent/webrtc-agent.test.cjs
 agent/active-tests.test.cjs`).
 
-The 1.0.0 release is a stabilization of the 0.9.0 Tier 1 feature set: the
-extension and bundled agent versions are aligned at 1.0.0 with no functional
+The earlier 1.0.0 release stabilized the 0.9.0 Tier 1 feature set: the
+extension and bundled agent versions were aligned at 1.0.0 with no functional
 change from 0.9.0 beyond the version bump. Tier 2 (T9–T14) remains planned
 (see [PLAN.MD](PLAN.MD)).
+
+### 1.0.1 correction — embedded video frames
+
+With **Strip CSP** enabled, the injector now retains the original enforced
+`frame-ancestors` directive from each CSP policy, including multiple headers and
+comma-separated policy lists. Other CSP directives, report-only headers and CSP
+meta tags are removed as before. `X-Frame-Options` remains intact.
+
+Previously, deleting an enforced `frame-ancestors` policy could reactivate
+`X-Frame-Options: SAMEORIGIN`, blocking a previously permitted cross-origin video
+frame even though Burp recorded HTTP 200. Preserving the directive maintains the
+original allowed parents and denied frames. Injection remains gated on the host
+allow-list, Burp Target scope and the injection switch.
+
+Reload the extension and browser page after installing 1.0.1. The Config help
+explains the retained framing policy. Six injector regression tests cover this
+behavior, duplicate policies and scope/configuration gating.
 
 ### 0.9.0 additions — Tier 1 coverage (see [PLAN.MD](PLAN.MD))
 
@@ -111,7 +128,7 @@ passive, so it can be generated any time without touching the target.
 
 - [x] Print the extension name and version to Burp's extension **Output** console
   on every load/reload so the tester can confirm which version is running
-  (`WebRTC Test Suite v1.0.0 loaded`). The version is read from the loaded JAR's
+  (`WebRTC Test Suite v1.0.1 loaded`). The version is read from the loaded JAR's
   build metadata (manifest `Implementation-Version`, then a generated
   `webrtc-version.properties`), so the message identifies the actual loaded
   artifact rather than a hard-coded string.
@@ -721,7 +738,7 @@ clearly marks anything it skipped and why. Export the results from the Findings
 |--------|---------|--------------|
 | Run All | Run All | Guided one-click workflow: config check → telemetry review (incl. T1 stats, T2 cert binding, T3 privacy, T4/T5 SDP audit, T7 signaling metadata) → live M6/T1/M4/M3+ checks → optional opt-in T8 flood → guidance for M3/M5. |
 | M0 Config + detectors | Config (M0) | Host allow-list, bridge settings, identity profiles, identifier map; protocol-agnostic SDP/ICE/private-IP/candidate detectors (T3–T5). |
-| M1 Injector + CSP | (Config) | Injects the bundled browser agent before `</head>` on allow-listed, in-scope HTML and strips CSP. Controlled from Config. |
+| M1 Injector + CSP | (Config) | Injects the bundled browser agent before `</head>` on allow-listed, in-scope HTML and strips CSP except enforced `frame-ancestors`, preserving the original framing policy. Controlled from Config. |
 | M2 Telemetry bridge | Telemetry (M2) | Embedded loopback HTTP server; agent beacons SDP / ICE (private-IP flagged) / DTLS-SRTP cipher / DataChannel / `stats-snapshot` / `dtls-cert` events. Imports a `chrome://webrtc-internals` dump and cross-checks candidates, ciphers and codecs; **Capture stats (T1)** forces a fresh snapshot. |
 | M3 SDP mutation | SDP Mutation (M3) | Scope-gated incoming/outgoing SDP edits, persisted rules, before/after evidence, and browser acceptance/rejection telemetry. |
 | M3+ SDP fuzz | SDP Fuzz (M3+) | Mutates every line of the latest observed SDP with malformed/known payloads and bounded size/overflow variants, then records accepted vs rejected on a throwaway peer. Local parse only, no packets sent. |
@@ -761,7 +778,7 @@ node --test agent/webrtc-agent.test.cjs agent/active-tests.test.cjs
 ## Load in Burp
 
 1. Extensions → Installed → Add → Extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.0.0 loaded`; a **WebRTC** suite tab appears.
+2. Output shows `WebRTC Test Suite v1.0.1 loaded`; a **WebRTC** suite tab appears.
 
 ## Use
 
@@ -772,7 +789,7 @@ node --test agent/webrtc-agent.test.cjs agent/active-tests.test.cjs
    plain-English explanation of any field, and **Check configuration** to confirm
    you are ready.
 2. Add the target to Burp **Target scope**.
-3. Browse the app through Burp → the bundled agent is injected, CSP stripped.
+3. Browse the app through Burp → the bundled agent is injected, CSP restrictions stripped except enforced `frame-ancestors`.
 4. Join a call → **Telemetry (M2)** fills with SDP, ICE (PRIVATE flag), cipher.
 5. Right-click any request → **WebRTC: Run authz matrix** → results in **Authz Matrix (M5)**.
 6. Open **External Tests** to copy ready Linux/Bash commands for the external RTC

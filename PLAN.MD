@@ -1,8 +1,8 @@
 # PLAN.MD — WebRTC Test Suite coverage expansion
 
-Status: **Tier 1 (T1–T8) shipped; released as 1.0.0** (extension and agent aligned at
-1.0.0, no functional change from 0.9.0). Tier 2 (T9–T14) and the Tier 3 external
-catalogue additions remain planned. Target: increase self-contained coverage of the
+Status: **Tier 1 (T1–T8) shipped; released as 1.0.1** (extension and agent aligned at
+1.0.1; CSP stripping preserves enforced frame-ancestors policies). Tier 2 (T9–T14)
+and the Tier 3 external catalogue additions remain planned. Target: increase self-contained coverage of the
 extension against Enable Security's WebRTC pentest methodology, the HackTricks WebRTC DoS
 note, the WebRTC Security whitepaper, and `awesome-rtc-hacking`, while keeping the stated
 design boundary (browser W3C JS-API hook + Burp traffic; no raw packets, no native fuzzing).
@@ -23,7 +23,7 @@ Tier 1 implementation notes:
 
 ## Current coverage (do not duplicate)
 
-- M1 inject + CSP strip; M2 SDP/ICE/cipher/DataChannel/userMedia telemetry; M3 SDP
+- M1 inject + CSP strip (preserves frame-ancestors); M2 SDP/ICE/cipher/DataChannel/userMedia telemetry; M3 SDP
   mutation; M3+ SDP parser fuzz; M4 DataChannel fuzz; M5 HTTP authz matrix/IDOR; M6
   STUN/TURN gather + relay allocation; M7 report/CSV; chrome://webrtc-internals compare;
   External Tests command builder; full credential visibility.

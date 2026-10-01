@@ -16,7 +16,8 @@ import java.nio.charset.StandardCharsets
 
 /**
  * M1 — injects the browser agent before </head> on allow-listed, in-scope HTML
- * responses and strips CSP so the inline agent runs.
+ * responses and strips CSP restrictions except frame-ancestors so the inline
+ * agent runs without changing which parents may embed the page.
  */
 class InjectorHandler(
     private val api: MontoyaApi,
@@ -50,8 +51,15 @@ class InjectorHandler(
 
         var out: HttpResponse = resp
         if (cfg.stripCsp) {
-            out = out.withRemovedHeader("Content-Security-Policy")
-                .withRemovedHeader("Content-Security-Policy-Report-Only")
+            val policies = resp.headers().filter { it.name().equals("Content-Security-Policy", true) }
+            val reportOnly = resp.headers().filter { it.name().equals("Content-Security-Policy-Report-Only", true) }
+            out = out.withRemovedHeaders(policies + reportOnly)
+            for (policy in policies) {
+                // Enforced frame-ancestors overrides X-Frame-Options. Removing it
+                // can activate SAMEORIGIN and break previously allowed embeds.
+                val ancestors = retainedFrameAncestors(policy.value()) ?: continue
+                out = out.withAddedHeader(policy.name(), ancestors)
+            }
         }
 
         val agent = buildAgentScript(cfg) ?: return ResponseReceivedAction.continueWith(out)
@@ -95,3 +103,10 @@ class InjectorHandler(
     private fun jsonStr(s: String): String =
         "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 }
+
+/** Preserve the first frame-ancestors directive in each comma-separated policy. */
+internal fun retainedFrameAncestors(value: String): String? = value.split(',').mapNotNull { policy ->
+    policy.split(';').map { it.trim() }.firstOrNull { directive ->
+        directive.substringBefore(' ').substringBefore('\t').equals("frame-ancestors", true)
+    }
+}.takeIf { it.isNotEmpty() }?.joinToString(", ")

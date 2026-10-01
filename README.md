@@ -8,7 +8,7 @@ in — every engagement detail is configuration, persisted in the Burp project f
 > ICE probing, replay, flood) is gated on Burp **Target scope**. Credentials live
 > only in the Burp project file and are never masked.
 
-**Version 1.0.0** · JDK 21 · Burp Montoya API 2026.7
+**Version 1.0.1** · JDK 21 · Burp Montoya API 2026.7
 
 ## What it does
 
@@ -28,6 +28,10 @@ API-visible attack surface from inside Burp:
   external RTC tools (text only; it never executes them).
 - **Findings (M7)** — exports a Markdown report and CSV, with credentials intact.
 
+Version 1.0.1 fixes embedded video pages being blocked by `X-Frame-Options:
+SAMEORIGIN` after CSP stripping. The injector now preserves enforced
+`frame-ancestors` directives while relaxing the remaining CSP restrictions.
+
 ## Download
 
 Prebuilt extension (bundles the browser agent):
@@ -46,7 +50,7 @@ Output: `build/libs/webrtc-testsuite-all.jar`.
 ## Load in Burp
 
 1. Extensions → Installed → Add → extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.0.0 loaded`; a **WebRTC** tab appears.
+2. Output shows `WebRTC Test Suite v1.0.1 loaded`; a **WebRTC** tab appears.
 3. In **Config (M0)**: enable agent injection, add the app host(s) to the
    allow-list, Save. Advanced settings are auto-configured — leave them collapsed.
 4. Add the target to Burp **Target scope**, browse the app through Burp, join a

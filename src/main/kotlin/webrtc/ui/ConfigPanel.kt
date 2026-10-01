@@ -116,8 +116,8 @@ class ConfigPanel(
         add(stripCsp, BorderLayout.WEST)
         add(HelpUi.button(
             "Strip CSP on injected responses",
-            "Removes Content-Security-Policy headers (and CSP <meta> tags) from pages the agent is injected into. Strict WebRTC apps often ship a CSP that blocks inline scripts, which would stop the agent from loading. Leave ON unless you specifically need the app's CSP intact.",
-            "A page returning `Content-Security-Policy: script-src 'self'` would block the agent; stripping it lets the agent run. Note this also lowers the app's own XSS protection on those responses — expected during a test, not something to leave on afterwards."
+            "Removes CSP restrictions that can block the agent, report-only CSP headers, and CSP <meta> tags from injected pages. Preserves enforced frame-ancestors directives and X-Frame-Options so embedded video pages keep their original framing policy. Leave ON unless you need the app's full CSP intact.",
+            "A page returning `Content-Security-Policy: script-src 'self'; frame-ancestors https://app.example` retains `frame-ancestors https://app.example`, letting the agent run while the app can still embed the page. This lowers the app's XSS protection during the test."
         ), BorderLayout.CENTER)
     }
 
