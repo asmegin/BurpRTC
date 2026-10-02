@@ -8,7 +8,7 @@ in — every engagement detail is configuration, persisted in the Burp project f
 > ICE probing, replay, flood) is gated on Burp **Target scope**. Credentials live
 > only in the Burp project file and are never masked.
 
-**Version 1.1.0** · JDK 21 · Burp Montoya API 2026.7
+**Version 1.1.1** · JDK 21 · Burp Montoya API 2026.7
 
 ## What it does
 
@@ -37,6 +37,24 @@ API-visible attack surface from inside Burp:
   security categories, then 12 detailed evidence sections. Built-in, partial and
   external/manual coverage stay separate from actual execution results.
   CSV and credentials remain intact.
+
+### 1.1.1 fixes — SPA interception, assessment selection & automatic Run All
+
+- **Fixed constant HTTP 403s on the agent collect endpoint.** The bridge bound each
+  session to the exact injected URL, so single-page navigation (client-side routing,
+  fragments, query changes) rejected every telemetry beacon after the first load.
+  Sessions now bind at **origin** granularity; the unguessable per-injection token,
+  loopback-only Host check and same-origin check still isolate pages and block
+  cross-origin / DNS-rebinding callers.
+- **Assessment Tests selection.** Added **Select all executable** (selects only tests
+  with a ready automated backend), **Select all**, and **Clear selection**. The former
+  terse "No execution adapter" label now reads "Manual / external — see contract".
+- **Run All runs assessments automatically.** When no assessment tests are curated,
+  Run All now executes every test that has a ready automated backend (passive, TURN
+  runner, configured scenarios) instead of running none.
+
+This is an extension-side fix — reload the extension with the new jar. The bundled
+agent is bumped to 1.1.1 for version alignment; its behavior is unchanged.
 
 ### 1.1.0 additions — executable assessment suite, managed protocol runner & methodology corrections
 
@@ -112,7 +130,7 @@ Output: `build/libs/webrtc-testsuite-all.jar`.
 ## Load in Burp
 
 1. Extensions → Installed → Add → extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.0.5 loaded`; a **WebRTC** tab appears.
+2. Output shows `WebRTC Test Suite v1.1.1 loaded`; a **WebRTC** tab appears.
 3. In **Config (M0)**: enable agent injection, add the app host(s) to the
    allow-list, Save. Advanced settings are auto-configured — leave them collapsed.
 4. Add the target to Burp **Target scope**, browse the app through Burp, join a

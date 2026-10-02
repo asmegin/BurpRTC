@@ -11,6 +11,16 @@ class AssessmentTest {
         assertEquals(TestRegistry.definitions.size, TestRegistry.byId.size)
         assertTrue(TestRegistry.definitions.all { it.contract.isNotBlank() && it.title.isNotBlank() })
     }
+    @Test fun `executable set covers only tests with a ready automated backend`() {
+        // Drives Run All's "everything automatic" path when nothing is curated.
+        val cfg = AssessmentConfig()
+        val exec = TestRegistry.executable(cfg)
+        assertEquals(TestRegistry.passiveTests + TestRegistry.protocolTests, exec)
+        assertFalse("SIG-07" in exec) // paired/manual backlog item has no adapter
+        assertTrue(exec.all { TestRegistry.capability(it, cfg) in setOf("Passive analysis", "Bundled TURN runner") })
+        // A test gains executability once a scenario is configured for it.
+        assertFalse("SIG-02" in exec)
+    }
     @Test fun `status and upgrade acceptance cannot masquerade as protected effects`() {
         val step = ScenarioStep("get", "https://app.test/", assertion = Assertion("/status", JsonPrimitive(200)))
         assertFailsWith<IllegalArgumentException> { Scenario("s", "SIG-02", "auth", "private", control = listOf(step), cases = listOf(ScenarioCase("absent", listOf(step)))).validate() }

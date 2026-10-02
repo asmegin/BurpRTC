@@ -60,11 +60,19 @@ class BridgeServerTest {
         assertContains(response, "Cache-Control: no-store")
         assertContains(response, "sdp-mutation")
     }
-    @Test fun `Host Origin token frame and agent all bind command access`() = fixture { f ->
+    @Test fun `Host Origin token cross-origin frame and agent all bind command access`() = fixture { f ->
         assertTrue(request(f).startsWith("HTTP/1.1 200"))
         for (response in listOf(request(f, token = "guess"), request(f, host = "rebind.attacker.test"), request(f, origin = "https://attacker.test"),
-            request(f, frame = "https://example.test/other"), request(f, agent = "another-agent")))
+            request(f, frame = "https://other.test/call"), request(f, agent = "another-agent")))
             assertTrue(response.startsWith("HTTP/1.1 403"), response)
+    }
+    @Test fun `same-origin in-page navigation keeps collection working`() = fixture { f ->
+        // A single-page app mutates location.href after load (routing, fragments,
+        // query), so the reported frame differs from the injected URL but the origin
+        // is unchanged. These beacons must still be collected, not 403'd.
+        assertTrue(request(f, "POST", "/collect", event("ice", "https://example.test/call#/room/42")).startsWith("HTTP/1.1 204"))
+        assertTrue(request(f, "POST", "/collect", event("ice", "https://example.test/other/path?x=1")).startsWith("HTTP/1.1 204"))
+        assertEquals(2, f.telemetry.snapshot().size)
     }
     @Test fun `valid telemetry accepted and malformed fields cannot crash bridge`() = fixture { f ->
         assertTrue(request(f, "POST", "/collect", event("ice")).startsWith("HTTP/1.1 204"))

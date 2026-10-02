@@ -161,7 +161,17 @@ class RunAllController(
         reviewIdentifiers(emit)
 
         emit(Line(Level.HEAD, "Security checklist coverage"))
-        if (!cancelled) assessments?.run { emit(Line(Level.INFO, it)) }
+        if (!cancelled) assessments?.let { a ->
+            // "Everything automatic": when the tester has not curated a selection in
+            // the Assessment tests tab, Run All executes every test that has a ready
+            // automated backend (passive, TURN runner, configured scenarios) instead
+            // of running nothing. An explicit selection is still honored as-is.
+            val selected = cfg.assessment.selectedTests
+            val ids = selected.ifEmpty { webrtc.assessment.TestRegistry.executable(cfg.assessment) }
+            if (selected.isEmpty())
+                emit(Line(Level.INFO, "No assessment tests selected; auto-running ${ids.size} with a ready automated backend. Curate in the Assessment tests tab to change this."))
+            a.run(ids = ids) { emit(Line(Level.INFO, it)) }
+        }
         val sections = SecurityTestReport.sections(cfg, telemetry.snapshot(), authzResults(), observedSignalingEndpoints())
         SecurityTestReport.checklist(sections).forEach { summary ->
             val level = when {

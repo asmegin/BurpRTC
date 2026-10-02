@@ -21,8 +21,13 @@ object TestRegistry {
         id in protocolTests -> "Bundled TURN runner"
         id in scenarioTests && config.scenarios.any { it.testId == id } -> "Configured scenario"
         id in scenarioTests -> "Needs scenario / identities / receiver assertions"
-        else -> "No execution adapter"
+        else -> "Manual / external — see contract"
     }
+
+    /** Runnable buckets: these have an automated backend ready to execute now. */
+    private val runnableCapabilities = setOf("Passive analysis", "Bundled TURN runner", "Configured scenario")
+    fun executable(config: AssessmentConfig): Set<String> =
+        definitions.map { it.id }.filter { capability(it, config) in runnableCapabilities }.toSet()
 }
 
 @Serializable

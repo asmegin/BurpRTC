@@ -51,7 +51,7 @@ class AssessmentController(private val config: ConfigStore, val store: OutcomeSt
                     val evidence = telemetry.snapshot().filter { it.type in types }
                     record(id, if (evidence.isEmpty()) "not-tested" else "observed", if (evidence.isEmpty()) "No relevant observations captured" else "${evidence.size} observations available in M7; passive interpretation only")
                 }
-                else -> record(id, "unsupported", "No execution adapter for this requirement. ${definition.contract}")
+                else -> record(id, "unsupported", "Not automatable from Burp; test manually or with an external tool (see External Tests). ${definition.contract}")
             }
         }
     }

@@ -54,6 +54,9 @@ class AssessmentPanel(private val config: ConfigStore, private val controller: A
             addTab("Registry", JScrollPane(table)); addTab("Prerequisites / scenarios", JScrollPane(editor)); addTab("Evidence", JScrollPane(results))
         }
         val buttons = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+            add(JButton("Select all executable").apply { addActionListener { select(TestRegistry.executable(config.config.assessment)) } })
+            add(JButton("Select all").apply { addActionListener { select(TestRegistry.definitions.map { it.id }.toSet()) } })
+            add(JButton("Clear selection").apply { addActionListener { select(emptySet()) } })
             add(JButton("Validate / save settings").apply { addActionListener { save() } })
             add(JButton("Reload settings").apply { addActionListener { load() } })
             add(JButton("Run selected").apply { addActionListener { run(false) } })
@@ -64,6 +67,12 @@ class AssessmentPanel(private val config: ConfigStore, private val controller: A
         }
         add(buttons, BorderLayout.NORTH); add(tabs, BorderLayout.CENTER); add(status, BorderLayout.SOUTH)
         load()
+    }
+    private fun select(ids: Set<String>) {
+        val cfg = config.config
+        config.save(cfg.copy(assessment = cfg.assessment.copy(selectedTests = ids)))
+        model.fireTableDataChanged()
+        status.text = "${ids.size} test(s) selected. 'Select all executable' picks only tests with a ready automated backend; the rest are manual/external."
     }
     private fun load() { editor.text = json.encodeToString(Settings(config.config.assessment, config.config.protocolScan)) }
     private fun save(): Boolean = try {

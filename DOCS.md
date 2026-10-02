@@ -13,12 +13,36 @@ configuration (Module 0), persisted in the Burp project file.
 
 ## Current status (2026-10-02)
 
-**Version 1.1.0.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.1.0**, the Python TLS adapter, and the managed protocol runner. Validation
+**Version 1.1.1.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
+**1.1.1**, the Python TLS adapter, and the managed protocol runner. Validation
 commands are listed under Build; JVM, agent and Python regressions cover the
 backlog requirements and execution boundaries.
-Validated: **126 JVM tests passed**, one opt-in TLS integration test skipped;
+Validated: **127 JVM tests passed**, one opt-in TLS integration test skipped;
 **36 agent tests** and **11 Python tests** passed. The fat JAR builds successfully.
+
+### 1.1.1 fixes — SPA interception, assessment selection & automatic Run All
+
+- **Fixed constant HTTP 403s on the agent collect endpoint.** `BridgeSessions`
+  bound each session to the exact injected URL, so single-page navigation (routing,
+  fragments, query changes) made the agent's reported `location.href` diverge from
+  Burp's `request.url()` and every telemetry beacon was rejected after the first
+  load. Sessions now bind at **origin** granularity: the unguessable per-injection
+  token, loopback-only `Host` check and same-origin check still isolate pages and
+  block cross-origin / DNS-rebinding callers, while in-page navigation keeps
+  collecting. Covered by a new `same-origin in-page navigation` bridge test.
+- **Assessment Tests selection.** The Registry tab adds **Select all executable**
+  (only tests with a ready automated backend — passive, TURN runner, configured
+  scenarios), **Select all**, and **Clear selection**. The former "No execution
+  adapter" execution-path label now reads "Manual / external — see contract", and
+  the recorded reason explains the item is tested manually or with an external tool.
+- **Run All runs assessments automatically.** Previously Run All executed only the
+  tests explicitly ticked in the Assessment tab, which defaults to none — so the
+  registry was silently skipped out of the box. When nothing is curated, Run All now
+  auto-runs every test with a ready automated backend and reports how many.
+
+This is an extension-side fix; reload the extension with the new jar. The bundled
+agent is bumped to 1.1.1 for version alignment, but `webrtc-agent.js` behavior is
+unchanged, so a browser page reload is optional.
 
 ### 1.1.0 additions — executable assessment suite, managed protocol runner & methodology corrections
 
@@ -365,7 +389,7 @@ passive, so it can be generated any time without touching the target.
 
 - [x] Print the extension name and version to Burp's extension **Output** console
   on every load/reload so the tester can confirm which version is running
-  (`WebRTC Test Suite v1.0.5 loaded`). The version is read from the loaded JAR's
+  (`WebRTC Test Suite v1.1.1 loaded`). The version is read from the loaded JAR's
   build metadata (manifest `Implementation-Version`, then a generated
   `webrtc-version.properties`), so the message identifies the actual loaded
   artifact rather than a hard-coded string.
@@ -1018,7 +1042,7 @@ node --test agent/webrtc-agent.test.cjs agent/active-tests.test.cjs
 ## Load in Burp
 
 1. Extensions → Installed → Add → Extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.0.5 loaded`; a **WebRTC** suite tab appears.
+2. Output shows `WebRTC Test Suite v1.1.1 loaded`; a **WebRTC** suite tab appears.
 
 ## Use
 

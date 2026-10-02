@@ -18,7 +18,13 @@ class BridgeSessions {
     @Synchronized fun permits(token: String, origin: String, frame: String, agent: String): Boolean {
         val session = sessions[token] ?: return false
         if (session.created.plusSeconds(43200).isBefore(Instant.now())) { sessions.remove(token); return false }
-        if (frame != session.frame || origin != originOf(frame) || agent.isBlank() || agent.length > 160) return false
+        // Bind at origin granularity, not the exact injected URL: a single-page app
+        // mutates location.href (routing, fragments, query) after load, so an
+        // exact-URL match would 403 every beacon once the app navigates. The
+        // unguessable per-injection token plus the same-origin check still isolate
+        // pages and block cross-origin/DNS-rebinding callers.
+        val sessionOrigin = originOf(session.frame)
+        if (originOf(frame) != sessionOrigin || origin != sessionOrigin || agent.isBlank() || agent.length > 160) return false
         if (session.agent == null) session.agent = agent
         return session.agent == agent
     }
