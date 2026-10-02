@@ -111,7 +111,7 @@ class ActiveTestController(
 
     @Synchronized fun queueIce(agentId: String, settings: IceProbeConfig): String {
         val endpoint = settings.validate()
-        require(endpoint == null || inScope(endpoint.scopeUrl)) { "Add the ICE endpoint to Burp Target scope: ${endpoint?.scopeUrl}" }
+        require(endpoint == null || pageAllowed(endpoint.scopeUrl)) { "Allow the ICE listener host and add it to Burp Target scope: ${endpoint?.scopeUrl}" }
         return enqueue(freshAgent(agentId), "ice-probe", buildJsonObject {
             put("config", json.encodeToJsonElement(IceProbeConfig.serializer(), settings))
         }, endpoint?.scopeUrl)
@@ -140,7 +140,7 @@ class ActiveTestController(
 
     @Synchronized fun jobState(id: String): String? { expire(); return jobs[id]?.state }
 
-    fun endpointAllowed(url: String): Boolean = runCatching { inScope(IceEndpoint.parse(url).scopeUrl) }.getOrDefault(false)
+    fun endpointAllowed(url: String): Boolean = runCatching { pageAllowed(IceEndpoint.parse(url).scopeUrl) }.getOrDefault(false)
 
     private fun freshAgent(id: String): Agent {
         val agent = agents[id] ?: throw IllegalArgumentException("Select a live browser page; reload it if needed")
@@ -181,7 +181,7 @@ class ActiveTestController(
         return true
     }
 
-    private fun allowed(job: Job, frame: String) = pageAllowed(frame) && (job.endpoint == null || inScope(job.endpoint))
+    private fun allowed(job: Job, frame: String) = pageAllowed(frame) && (job.endpoint == null || pageAllowed(job.endpoint))
 
     @Synchronized fun cancel(agentId: String, type: String) {
         jobs.values.filter { it.agent == agentId && it.type == type && it.state in activeStates }.forEach { transition(it, "cancelled") }

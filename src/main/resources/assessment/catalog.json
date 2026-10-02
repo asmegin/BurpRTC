@@ -1,0 +1,583 @@
+[
+  {
+    "id": "FND-01",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Shared executable test registry",
+    "contract": "Give each test a stable ID, applicability predicate, required inputs, backend capability, dependencies, expected effect, budgets, and evidence rules. Extend the existing `ScanPlan` direction. Run All, individual tabs, and M7 must use this registry. Done when an enabled test cannot disappear silently or be counted twice across report areas."
+  },
+  {
+    "id": "FND-02",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Discovery with provenance",
+    "contract": "Correlate application, account, page/frame/agent, peer, room, signaling connection, ICE listener, allocation, selected pair, and observation time. Parse captured configuration responses and WS messages as well as `RTCPeerConnection` configuration changes. Done when two concurrent apps cannot mix TURN credentials, certificates, or replay identities."
+  },
+  {
+    "id": "FND-03",
+    "priority": "P1",
+    "modes": "Engineering",
+    "title": "Managed protocol runner",
+    "contract": "Reuse the TLS runner's structured input/output, process cancellation, runtime checks, and bounded output design for STUN/TURN, WS/SIP, DTLS, and media adapters. Support Windows-hosted Burp and an explicitly configured companion where platform support requires it. Pin versions and document licenses. Done when tests run and return structured evidence from Burp without copying shell commands; edited recipes remain text."
+  },
+  {
+    "id": "FND-04",
+    "priority": "P1",
+    "modes": "Engineering",
+    "title": "Controlled peer and two-identity harness",
+    "contract": "Provide synthetic audio/video markers, DataChannel echo, TURN echo destinations, separate browser contexts, and receiver counters. Learn a successful join/publish/subscribe/leave scenario and replay it with bounded mutations. Done when a tester can prepare one valid call and run applicable scenarios without rebuilding call setup for every test. Record required user gestures as explicit prerequisites."
+  },
+  {
+    "id": "FND-05",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Scope every network leg",
+    "contract": "Preserve `ScopeGate` + host allow-list + `injectionEnabled` for all active backends. Gate signaling URLs, resolved addresses, TURN listeners AND relay destinations, redirect targets, alternate servers, media peers, and callbacks. Recheck on scope changes and before follow-up traffic; stop runners and release allocations. A discovered third-party service or ICE candidate never inherits authorization automatically."
+  },
+  {
+    "id": "FND-06",
+    "priority": "P1",
+    "modes": "Engineering",
+    "title": "Dependency-aware Run All",
+    "contract": "Show Ready, Needs identity, Needs live call, Needs peer, Unsupported backend, and Out of scope. Refresh expiring inputs, schedule calls before dependent probes, reuse successful controls, and offer rerun-failed/rerun-after-fix. Done when interrupted work has resumable results and tests are not repeated against every page unnecessarily."
+  },
+  {
+    "id": "FND-07",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Evidence and outcome contract",
+    "contract": "Record test/run IDs, exact inputs, backend/tool versions, timestamps, controls, transmitted cases, observed effects, cleanup, and limitations. Separate capability, execution, security outcome, confidence, and severity. HTTP 200, WS 101, a local API return, or a TURN permission alone cannot confirm impact. Keep absent, timed-out, unsupported, and inconclusive results distinct from a demonstrated rejection."
+  },
+  {
+    "id": "FND-08",
+    "priority": "P1",
+    "modes": "Engineering",
+    "title": "Complete Burp workflow integration",
+    "contract": "Add RTC-specific context actions for observed HTTP/WS messages, insertion points for tokens, room IDs, SDP and candidates, and deduplicated Burp issues with reproduction and remediation. Import companion results into the same engagement. Done when the tester can move from observation to test to issue without re-entering evidence."
+  },
+  {
+    "id": "COR-01",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Fix IP-privacy classification",
+    "contract": "`RunAllController.reviewPrivacy` currently gathers public addresses without excluding relay candidates and uses a global `any` relay-policy check. Distinguish relay infrastructure from client host/srflx/prflx addresses, local observation from transmission, and each peer's effective policy. Normal public connectivity is not automatically a privacy violation. Done when relay-only and mixed-peer fixtures cannot produce a user-IP finding or blanket privacy pass. [IP handling requirements](https://www.rfc-editor.org/rfc/rfc8828.html)."
+  },
+  {
+    "id": "COR-02",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Restrict ICE reuse findings to actual restarts",
+    "contract": "`Detectors.iceCredentialReuse` compares successive offers; ordinary renegotiation may retain credentials. Parse session/media inheritance and non-adjacent credential lines instead of the current short-distance regex. Correlate restart requests and ICE generations; check both ufrag and password rotation. Done when ordinary renegotiation/BUNDLE reuse is accepted and a failed deliberate restart is detected. Treat character diversity as a heuristic, not measured entropy. [ICE restart rules](https://www.rfc-editor.org/rfc/rfc8445.html#section-9)."
+  },
+  {
+    "id": "COR-03",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Bind certificates to the correct session",
+    "contract": "`reviewStats` currently pools SDP fingerprints and deduplicates certificates by fingerprint. Match certificate role, peer, transport/MID, negotiation generation, and the declared algorithm. A match in another room must not satisfy binding; missing evidence must remain unknown. Done when swapped peer certificates fail correlation and simultaneous transports/algorithms work correctly. [SDP fingerprint semantics](https://www.rfc-editor.org/rfc/rfc8122.html)."
+  },
+  {
+    "id": "COR-04",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Apply SDP semantics per media section",
+    "contract": "Replace global fingerprint/codec/attribute checks with structured session/media inheritance, active versus rejected `m=` sections, BUNDLE groups, and local/remote direction. Payload type values are scoped; `m=application` is not RTP media. Done when a fingerprint on one transport cannot hide another transport's missing binding, and codec parameters cannot leak between media sections or peers. Handle bundle-only port-zero sections according to [BUNDLE semantics](https://www.rfc-editor.org/rfc/rfc9143.html), rather than automatically treating every zero port as rejection."
+  },
+  {
+    "id": "COR-05",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Correct crypto and capability verdicts",
+    "contract": "Treat self-signed DTLS certificates as normal fingerprint-based identities; distinguish their validity metadata from HTTPS PKI failures. SDES exposes keys to signaling participants but HTTPS may still protect signaling in transit. Standard SRTP HMAC-SHA1 profiles, `ice-lite`, mDNS, codec names, and certificate reuse alone are not confirmed vulnerabilities. Require negotiation/policy context and retain existing missing-stats safeguards. [WebRTC trust model](https://www.rfc-editor.org/rfc/rfc8827.html)."
+  },
+  {
+    "id": "COR-06",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Reconcile the roadmap and labels",
+    "contract": "Rename T8 to describe its local negotiation loop: it sends no server signaling. Fix PLAN's older T8 server-rate-limit promise and Gradle examples that omit the required wrapper. Replace permanent product exclusions with backend requirements as features land. Reconcile the claim that credentials live only in the project with documented telemetry/clipboard/export behavior. Preserve full credentials as AGENTS requires. Make TODO the open backlog and retain PLAN's shipped history without duplicates."
+  },
+  {
+    "id": "SIG-01",
+    "priority": "P1",
+    "modes": "Burp",
+    "title": "Native WebSocket capture and RTC decoding (T9)",
+    "contract": "Register the available Montoya WS handlers, retain upgrade/auth/Origin/subprotocol metadata, and correlate messages and reconnects. Decode bounded JSON, nested or escaped SDP, trickle ICE, Socket.IO envelopes, and confirmed SIP; preserve binary messages with decoder plugins. Done when WS observations populate the same endpoint, credential, identity, and scenario inventory as HTTP."
+  },
+  {
+    "id": "SIG-02",
+    "priority": "P1",
+    "modes": "Burp",
+    "title": "Real authentication matrix",
+    "contract": "Extend M5 to HTTP and WS with valid, absent, malformed, expired, revoked, and alternate-user contexts. Capture auth in cookies, headers, query/body fields, subprotocols, and the first application message. Assert protected data/action outcomes rather than status codes. Done when leaving a body token behind cannot label a request unauthenticated."
+  },
+  {
+    "id": "SIG-03",
+    "priority": "P1",
+    "modes": "Burp + Paired",
+    "title": "Cross-site WebSocket hijacking",
+    "contract": "Compare allowed, untrusted, null, and absent Origin handshakes; test origin-parser edge cases. Confirm sensitive read/write access from a real controlled browser origin with its actual cookie/SameSite rules. A forged Origin accepted by a raw client is only a lead. [OWASP WebSocket guidance](https://cheatsheetseries.owasp.org/cheatsheets/WebSocket_Security_Cheat_Sheet.html)."
+  },
+  {
+    "id": "SIG-04",
+    "priority": "P1",
+    "modes": "Burp + Paired",
+    "title": "Per-message and cross-tenant authorization",
+    "contract": "Substitute room, participant, producer, consumer, stream, recording, and tenant identifiers across established connections. Exercise join, invite, publish, subscribe, kick, mute, transfer-host, and record operations using guest/member/ moderator roles. Done when unauthorized delivery or a forbidden state change is observed in the second identity, with a valid-role control."
+  },
+  {
+    "id": "SIG-05",
+    "priority": "P1",
+    "modes": "Burp + Paired",
+    "title": "Session lifecycle and token binding",
+    "contract": "Test logout, expiry, kick/ban, password/session revocation, refresh, reconnect, duplicate identity, and invitation reuse. Check issuer/audience/tenant/room/role claims where tokens support them. Specify the application's expected lifetime; token expiry does not universally mandate ending an established call. Verify whether both fresh admission and existing media/data privileges meet that policy."
+  },
+  {
+    "id": "SIG-06",
+    "priority": "P1",
+    "modes": "Burp + Paired",
+    "title": "Admission and enumeration",
+    "contract": "Test waiting room and host approval, locked rooms, meeting passwords, invite expiry, guest restrictions, and reconnect paths. Bound room/account enumeration to supplied fixtures and compare response content/timing. Done when identifier guessability is separated from demonstrated unauthorized admission or information exposure."
+  },
+  {
+    "id": "SIG-07",
+    "priority": "P1",
+    "modes": "Paired",
+    "title": "Call-state and user-consent regression suite",
+    "contract": "Reorder/replay offer, answer, candidate, renegotiation, and hangup messages before acceptance, after rejection, during simultaneous calls, and after termination. Include hold, mute, track replacement, and multi-device transitions. Verify forbidden transmission with synthetic media at the receiving peer; permission granted to a browser is not consent to every call. Inspired by Project Zero's [calling state-machine research](https://projectzero.google/2021/01/the-state-of-state-machines.html)."
+  },
+  {
+    "id": "SIG-08",
+    "priority": "P1",
+    "modes": "Burp",
+    "title": "Stateful signaling fuzzer (T10)",
+    "contract": "Mutate message type, field types, duplicate/missing fields, nesting, bounded lengths, SDP, candidates, sequence numbers and transaction IDs within a recorded valid flow. Include replay, stale messages, ordering and controlled races. Done when the remote server/client response and recovery are captured separately from M3+'s local parser result; minimize and retain reproducible failing cases."
+  },
+  {
+    "id": "SIG-09",
+    "priority": "P2",
+    "modes": "Burp + Paired",
+    "title": "Injection and unsafe message handling",
+    "contract": "Use RTC insertion points for chat, display names, SDP attributes, room metadata, captions, file metadata and gateway fields. Integrate Burp checks for XSS, SQL/command/template injection, unsafe deserialization and prototype pollution where the receiving technology applies. Require sink execution, a controlled callback, or another concrete effect; reflected strings alone are not proof."
+  },
+  {
+    "id": "SIG-10",
+    "priority": "P2",
+    "modes": "Burp",
+    "title": "SSE, polling, and HTTP signaling parity",
+    "contract": "Apply authentication, CORS/CSRF, subscription authorization, reconnect, Last-Event-ID, cache isolation and token-leakage tests to non-WS transports. Done when the same room scenario remains testable after transport fallback, and public event streams are not confused with protected participant streams."
+  },
+  {
+    "id": "TRN-01",
+    "priority": "P1",
+    "modes": "Runner",
+    "title": "Listener/transport inventory",
+    "contract": "Test selected observed UDP, TCP, TLS and supported DTLS listeners over IPv4/IPv6, including nonstandard ports. Record STUN responses, realm, software, redirects, and allocation support. Distinguish client-to-server transport from UDP versus RFC 6062 TCP relaying. Unauthenticated STUN Binding success is expected in many deployments and is not an open TURN relay finding."
+  },
+  {
+    "id": "TRN-02",
+    "priority": "P1",
+    "modes": "Runner",
+    "title": "Automated TURN authentication matrix",
+    "contract": "Compare valid, absent, incorrect, known-expired and revoked credentials using fresh allocations; exercise realm/nonce and stale-nonce handling. Separate Allocate, Refresh, permission and transfer results. Keep a valid positive control and challenge transcript. Done when a failed browser gather cannot be mistaken for proven authentication enforcement, and credential expiry is measured or supplied."
+  },
+  {
+    "id": "TRN-03",
+    "priority": "P1",
+    "modes": "Burp + Runner",
+    "title": "Credential issuance and reuse policy",
+    "contract": "Test the application's TURN-credential API for missing auth, cross-user/tenant access, excessive lifetime, shared static credentials, caching, and continued issuance after logout. Distinguish expected browser-visible temporary TURN passwords from leaked server HMAC/admin secrets. Validate reuse against the stated service policy; a working credential outside one call is not automatically a bug. Record issuer, subject, realm, expiry and exact endpoint association."
+  },
+  {
+    "id": "TRN-04",
+    "priority": "P1",
+    "modes": "Runner + Paired",
+    "title": "Peer ACL/SSRF and real forwarding",
+    "contract": "Compare explicitly selected allowed and denied destinations using actual echo receipts. Cover loopback, private/link-local IPv4, IPv6 loopback/ULA/link-local, mapped/translated addresses and deployment-specific NAT64 routes. Use test services or metadata emulators for restricted destinations. A successful permission is not proof of reachability. [Slack TURN research](https://www.enablesecurity.com/blog/slack-webrtc-turn-compromise-and-bug-bounty/) and [coturn's topology-dependent ACL advisory](https://github.com/coturn/coturn/security/advisories/GHSA-2x4g-wx24-48m4)."
+  },
+  {
+    "id": "TRN-05",
+    "priority": "P1",
+    "modes": "Runner + Paired",
+    "title": "All relay data paths",
+    "contract": "Exercise CreatePermission/Send indications, ChannelBind/ChannelData, and TCP Connect/ConnectionBind where supported. Test delivery without permission, permission expiry, cross-allocation channel reuse, and differences between paths/transports/address families. Include bounded transfer to a controlled public peer for open-relay/bandwidth-abuse review. Legitimate unrestricted peer-to-peer relay capability requires policy context before being a finding."
+  },
+  {
+    "id": "TRN-06",
+    "priority": "P2",
+    "modes": "Runner",
+    "title": "STUN integrity and parsing",
+    "contract": "Test absent/bad MESSAGE-INTEGRITY, incorrect transactions, duplicate/unknown attributes, lengths/padding, and semantic attributes after the integrity boundary. Keep CRC FINGERPRINT distinct from keyed authentication. Measure changed allocation behavior as evidence; use controlled sessions for tampering. Coturn's [2026 integrity-boundary advisory](https://github.com/coturn/coturn/security/advisories/GHSA-5538-7cxj-5jcc) illustrates why this needs a regression case; its on-path plaintext-transport prerequisites must remain attached to that specific finding."
+  },
+  {
+    "id": "TRN-07",
+    "priority": "P2",
+    "modes": "Runner + Paired",
+    "title": "Allocation ownership and cleanup",
+    "contract": "Test cross-account refresh/delete/bind attempts, reservation tokens if supported, lifetime limits, logout-versus-allocation policy, reconnect behavior, and releases after Stop/timeouts. Done when the harness can distinguish accepted allocation state from actual packet transfer and leave no test allocation active."
+  },
+  {
+    "id": "TRN-08",
+    "priority": "P2",
+    "modes": "Runner",
+    "title": "Quotas and amplification measurements",
+    "contract": "Run bounded per-account allocation/bandwidth/concurrency tests with service-health controls. Measure request/response size ratios and unauthenticated response behavior using owned endpoints; reflection susceptibility needs the appropriate lab network, not an Internet spoofing campaign. Record enforced limits and recovery; a short run cannot prove the absence of rate limiting."
+  },
+  {
+    "id": "TRN-09",
+    "priority": "P1",
+    "modes": "Passive + Runner",
+    "title": "Optional coturn configuration audit",
+    "contract": "Import supplied config and deployment context to review auth mode, REST secret handling, peer deny/allow precedence, IPv6 restrictions, multicast/loopback, relay exposure, quotas, TLS, admin listeners and database access. Correlate settings with observed behavior and mark inaccessible configuration unknown. Use the [upstream configuration reference](https://github.com/coturn/coturn/blob/master/examples/etc/turnserver.conf) for the actual deployed version; do not prescribe one release's defaults to all."
+  },
+  {
+    "id": "ICE-01",
+    "priority": "P1",
+    "modes": "Browser + Paired",
+    "title": "Privacy policy matrix",
+    "contract": "Compare normal versus relay-only operation across IPv4/IPv6, permission states, TURN failure, network changes and tester-selected VPN/proxy arrangements. Correlate gathered, signaled, received and selected candidates, including related addresses and mDNS. Verify actual unauthorized direct connectivity or disclosure against the privacy requirement; missing candidates and a configuration flag cannot prove protection. [RFC 8828](https://www.rfc-editor.org/rfc/rfc8828.html)."
+  },
+  {
+    "id": "ICE-02",
+    "priority": "P1",
+    "modes": "Browser + Burp + Paired",
+    "title": "Trickle ICE manipulation",
+    "contract": "Extend M3 beyond embedded SDP to `addIceCandidate` and signaling messages. Mutate controlled destination, MID/m-line association, priority, protocol and username fragment; replay stale/cross-room candidates and end-of-candidates. Verify the peer's actual connectivity checks and authorization. A candidate accepted by a browser parser does not establish access to that destination."
+  },
+  {
+    "id": "ICE-03",
+    "priority": "P2",
+    "modes": "Runner + Paired",
+    "title": "ICE authentication and nomination",
+    "contract": "Test wrong/missing short-term credentials, stale generations, transaction mismatches, role conflicts, premature nomination and peer-reflexive candidates. Verify authenticated selected-pair behavior and rejection counters. Keep ICE authentication distinct from STUN discovery and TURN account auth. [ICE specification](https://www.rfc-editor.org/rfc/rfc8445.html)."
+  },
+  {
+    "id": "ICE-04",
+    "priority": "P1",
+    "modes": "Paired",
+    "title": "Consent freshness",
+    "contract": "With an established controlled call, stop answering consent requests while retaining packet capture. Verify application traffic ceases on the affected tuple after the specified consent expiry; test forged/stale replies and supported revocation behavior. Keep the healthy call as a control. Record timing, tuple and received packets, not just connection-state events. [RFC 7675's 30-second expiry](https://www.rfc-editor.org/rfc/rfc7675.html#section-5.1)."
+  },
+  {
+    "id": "ICE-05",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "Restart and path migration",
+    "contract": "Deliberately restart ICE, fail a relay, switch interfaces, and reconnect after room removal. Verify credential rotation, rejection of stale candidates/credentials, selected-pair changes and continued privacy/authorization policy. Do not assume every ICE restart also requires a new DTLS association; report the actual key lifecycle."
+  },
+  {
+    "id": "SDP-01",
+    "priority": "P1",
+    "modes": "Browser",
+    "title": "Complete hook coverage",
+    "contract": "Cover implicit `setLocalDescription()`, `setConfiguration`, transceivers, rollback and supported legacy callback paths; keep each mutation attached to its exact operation. Preserve valid baselines and restore settings after a run. Done when supported application negotiation paths no longer silently bypass mutation/telemetry."
+  },
+  {
+    "id": "SDP-02",
+    "priority": "P1",
+    "modes": "Burp + Paired",
+    "title": "Remote security enforcement matrix",
+    "contract": "Replay altered fingerprints, setup roles, ICE credentials, media directions, transport profiles, SDES attributes and unexpected tracks through actual signaling. Distinguish local rejection, remote rejection, completed handshake, and received media. A removed fingerprint causing a local exception proves only local validation; it does not test the media server."
+  },
+  {
+    "id": "SDP-03",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "BUNDLE and stream identity confusion",
+    "contract": "Mutate MID, MSID, SSRC, RID/simulcast, extension mappings, BUNDLE membership, rtcp-mux, rejected sections and reused payload types within valid sessions. Check whether tracks are routed to another participant or acquire unintended permissions. Include rollback/glare and stale answers. Done when receiver track identity, session ownership and media markers establish the outcome."
+  },
+  {
+    "id": "SDP-04",
+    "priority": "P2",
+    "modes": "Browser + Paired",
+    "title": "Codec negotiation policy (T14)",
+    "contract": "Compare capabilities, advertised preferences, negotiated codec and actual encoder/decoder use. Test forbidden codecs/profiles, malformed fmtp, RTX/FEC association, and policy fallback. A codec preference change is not inherently an encryption downgrade; report a security issue only against a relevant requirement or demonstrated parser effect. [WebRTC API](https://www.w3.org/TR/webrtc/)."
+  },
+  {
+    "id": "DTL-01",
+    "priority": "P1",
+    "modes": "Runner",
+    "title": "Finish automatic TCP TLS coverage",
+    "contract": "Queue the selected HTTPS/WSS, TURN-TLS and applicable SIP-TLS listeners discovered in an engagement using the existing scanner. Preserve SNI, path-derived scope and each resolved endpoint; report trust, protocol/cipher and vulnerability probes separately. Compare listener aliases/backends where selected. Do not count a successful TCP TLS scan as DTLS media coverage."
+  },
+  {
+    "id": "DTL-02",
+    "priority": "P1",
+    "modes": "Runner + Paired",
+    "title": "ICE-aware DTLS capability testing",
+    "contract": "Establish authorized signaling and ICE before testing media DTLS. Enumerate supported versions/ciphers and SRTP protection profiles, and compare with negotiated values under both DTLS roles. A silent UDP socket or a DTLS alert without completed ICE is inconclusive. Done when a known-good call and the exact reachable handshake stage accompany every negative case."
+  },
+  {
+    "id": "DTL-03",
+    "priority": "P1",
+    "modes": "Paired",
+    "title": "Fingerprint and identity negative tests",
+    "contract": "Present a different certificate from the one committed in signaling; try stale session bindings, missing/wrong fingerprint and certificate changes during renegotiation. Verify protected media/data is rejected and the correct control connects. Also test substitution of both signaling identity and certificate where the app claims peer identity protection; valid DTLS alone does not bind an account to the intended caller. [RFC 8827](https://www.rfc-editor.org/rfc/rfc8827.html)."
+  },
+  {
+    "id": "DTL-04",
+    "priority": "P2",
+    "modes": "Lab + Paired",
+    "title": "Handshake race and state resilience",
+    "contract": "Add bounded DTLS ClientHello-before/alongside-legitimate-peer cases, wrong source, replayed flights, fragmentation/reassembly and failed-handshake recovery. Measure whether the authorized call is prevented and whether other calls recover. Keep this outside ordinary passive analysis. [Enable Security's DTLS race research](https://www.enablesecurity.com/blog/novel-dos-vulnerability-affecting-webrtc-media-servers/)."
+  },
+  {
+    "id": "DTL-05",
+    "priority": "P2",
+    "modes": "Passive + Lab",
+    "title": "Version-aware crypto regression cases",
+    "contract": "Map server crypto dependencies to vendor advisories using reliable version/build evidence, then offer isolated regression fixtures. CVE-2022-0778 is an example of certificate parsing reachable through a completed RTC setup, not a generic vulnerability in every browser or server. Require vulnerable/patched controls, CPU/crash evidence and exact dependencies for an active finding. [Original WebRTC reproduction](https://www.enablesecurity.com/blog/exploiting-cve-2022-0778-in-openssl-vs-webrtc-platforms/)."
+  },
+  {
+    "id": "MED-01",
+    "priority": "P1",
+    "modes": "Runner + Paired",
+    "title": "Authentication and replay protection",
+    "contract": "With controlled session keys, test modified payload/header/tag, missing or truncated tags, wrong keys, duplicate packets and replay-window boundaries. Exercise SRTP and SRTCP independently in each direction, including sequence rollover and out-of-order valid controls. Require receiver acceptance/drop counters or decoded synthetic markers; ciphertext seen on the wire is insufficient."
+  },
+  {
+    "id": "MED-02",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "Keys, epochs, and stream isolation",
+    "contract": "Test stale media after teardown/reconnect/rekey, key separation between directions/rooms, SSRC/context collisions and counter/nonce continuity where observable. Associate each packet with its transport and key epoch. Distinguish intentional DTLS association reuse from unsafe key/counter reuse; avoid conclusions from matching certificate fingerprints alone."
+  },
+  {
+    "id": "MED-03",
+    "priority": "P1",
+    "modes": "Runner + Paired",
+    "title": "RTP bleed and injection at gateways",
+    "contract": "For confirmed plaintext RTP legs, compare nominated versus unexpected senders, source-address latching and returned media; test injection with synthetic markers into an owned call. Verify gateway legs independently of browser SRTP. Require media endpoint/port validation, not SDP placeholder port 9. Adapt the existing SIPPTS recipe and the [DVRTC RTP-bleed lab](https://github.com/EnableSecurity/DVRTC)."
+  },
+  {
+    "id": "MED-04",
+    "priority": "P2",
+    "modes": "Runner + Paired",
+    "title": "RTP/RTCP control and demultiplexing",
+    "contract": "Mutate bounded RTP extensions, CSRC/SSRC, payload types, sequence/timestamps, padding and RTCP feedback/BYE lengths in established test sessions. Test forged feedback, cross-stream confusion and STUN/DTLS/RTP demultiplexing boundaries. Validate receiver behavior and service health; arbitrary acceptance or packet loss is a triage signal until an integrity, routing, crash or resource effect is shown."
+  },
+  {
+    "id": "MED-05",
+    "priority": "P2",
+    "modes": "Runner",
+    "title": "PCAP and media-evidence integration",
+    "contract": "Add managed capture/import with endpoint filters, packet timestamps and supported test-key imports. Link selected pairs, DTLS sessions, SRTP/SRTCP streams and receiver counters to test IDs. Record capture drops, missing keys and unsupported dissection. Keep encrypted payloads marked opaque when they cannot be decoded; TShark protocol recognition is not proof of successful application delivery."
+  },
+  {
+    "id": "DCH-01",
+    "priority": "P1",
+    "modes": "Browser + Paired",
+    "title": "Negotiation matrix (T11)",
+    "contract": "Test ordered/unordered delivery, partial reliability, invalid parameter combinations, negotiated-ID collisions, label/protocol lengths, binary/text types, stream closure/reset and reopening. Compare both endpoints' channel state and receipt. Retain M4 budgets and short-lived-channel support. [DataChannel specification](https://www.rfc-editor.org/rfc/rfc8831.html)."
+  },
+  {
+    "id": "DCH-02",
+    "priority": "P1",
+    "modes": "Paired",
+    "title": "Message authorization and injection",
+    "contract": "Test room/role enforcement for chat, file transfer, commands, collaborative actions and data topics; replay across participants and after removal. Exercise schemas, duplicate/out-of-order messages, and bounded file-name/path/type handling where supported. Done when a send result is paired with an observed remote effect or rejection, including applications where data is relayed by an SFU."
+  },
+  {
+    "id": "DCH-03",
+    "priority": "P2",
+    "modes": "Browser + Paired",
+    "title": "Backpressure and channel quotas",
+    "contract": "Measure `bufferedAmount`, negotiated message-size limits, concurrent channels, receiver processing, memory and recovery under bounded bursts. Include send-after-close and slow consumer scenarios. Record whether media quality is affected, release resources on Stop, and avoid equating sender exceptions with remote vulnerability. [WebRTC API limits and behavior](https://www.w3.org/TR/webrtc/)."
+  },
+  {
+    "id": "DCH-04",
+    "priority": "P3",
+    "modes": "Lab",
+    "title": "DCEP/SCTP packet harness",
+    "contract": "Add authenticated SCTP-over-DTLS tests for malformed establishment messages, PPIDs, stream IDs, fragmentation, partial reliability, resets and reassembly limits. JavaScript DataChannel payload fuzzing cannot craft all these protocol fields. Done when corpus, backend build, receiver traces and minimized failures are importable. [SCTP transport model](https://www.rfc-editor.org/rfc/rfc8831.html)."
+  },
+  {
+    "id": "SFU-01",
+    "priority": "P1",
+    "modes": "Passive + Paired",
+    "title": "Architecture and adapter packs",
+    "contract": "Record confirmed P2P/SFU/MCU/gateway roles from actual signaling, configuration or server evidence. Add versioned scenario adapters for common stacks while retaining a generic recorded workflow. Each adapter defines resource IDs, token grants, join/publish/subscribe and cleanup. Hostnames alone cannot establish topology or identify which hop can decrypt media."
+  },
+  {
+    "id": "SFU-02",
+    "priority": "P1",
+    "modes": "Paired",
+    "title": "Media and data authorization",
+    "contract": "Use two tenants and publisher/subscriber/guest/moderator roles to attempt cross-room track subscription, unauthorized publication, impersonated identities, hidden tracks, screen sharing and data access. Continue after permission changes and removals. Require decoded synthetic markers or verified remote actions; admission to signaling alone does not prove media access."
+  },
+  {
+    "id": "SFU-03",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "Routing and gateway trust",
+    "contract": "Test track/stream reassignment, stale consumer IDs, reconnect races, SFU migration, transcoding, recording bots and SIP bridge membership. Verify forwarding cannot cross tenant or conference boundaries. Validate each boundary with identities and receiver markers, including when encryption legitimately terminates at a gateway."
+  },
+  {
+    "id": "SFU-04",
+    "priority": "P1",
+    "modes": "Passive + Paired",
+    "title": "Verify E2EE claims",
+    "contract": "Detect supported encoded-transform/E2EE mechanisms and document which components hold keys. Test key-service authorization, join/leave rotation, removed-member access, wrong keys, integrity failure, and plaintext fallback. A DTLS-SRTP connection to an SFU alone cannot demonstrate E2EE. Do not flag absence of E2EE unless required by the application's security model. [SFrame's intermediary trust model](https://www.rfc-editor.org/rfc/rfc9605.html)."
+  },
+  {
+    "id": "SFU-05",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "E2EE downgrade and sender identity",
+    "contract": "Compare participants with mixed capabilities, worker/transform failure, renegotiation, recording enabled and membership changes. Check whether UI claims match actual protection. Test counter/key-ID reuse and sender attribution when inspectable; SFrame's symmetric authentication does not by itself provide per-sender authenticity. Require application-specific identity/key evidence. [SFrame security considerations](https://www.rfc-editor.org/rfc/rfc9605.html#section-7)."
+  },
+  {
+    "id": "WEB-01",
+    "priority": "P1",
+    "modes": "Passive + Browser",
+    "title": "Original-policy capture",
+    "contract": "Preserve original CSP, Permissions-Policy, frame rules, CORS, cookies and secure-context metadata before injection changes them. Run origin/XSS/framing checks in an unmodified comparison context. Done when stripped CSP or injected agent behavior cannot be reported as the target's native policy or an exploitable XSS result."
+  },
+  {
+    "id": "WEB-02",
+    "priority": "P2",
+    "modes": "Browser + Paired",
+    "title": "Permissions and capture lifecycle (T12)",
+    "contract": "Extend getUserMedia telemetry to display capture, device enumeration exposure, cross-origin frames, permission denial/revocation, track stop and navigation. Observe policy enforcement and whether protected transmission continues after the user-facing stop action, using synthetic tracks. Keep user gestures and browser-specific restrictions explicit; avoid collecting real microphone/camera contents for a generic scan."
+  },
+  {
+    "id": "WEB-03",
+    "priority": "P2",
+    "modes": "Browser",
+    "title": "Cross-origin integration",
+    "contract": "Test postMessage origin/source validation, embedded call controls, SDK callbacks, service-worker caches and third-party script access to signaling/media controls. Correlate with actual app roles and trusted parent origins. Support Chromium, Firefox and WebKit capability matrices; an unavailable API is a coverage limitation, not a successful security test."
+  },
+  {
+    "id": "APP-01",
+    "priority": "P1",
+    "modes": "Burp",
+    "title": "Token minting and administrative surfaces",
+    "contract": "Test RTC token endpoints for caller-controlled room/tenant/identity/role grants; check observed admin/monitor/debug APIs and supplied config for unintended exposure. Distinguish public SDK keys from signing/admin secrets. Add tailored assertions for [LiveKit grants](https://docs.livekit.io/frontends/reference/tokens-grants/) and [Janus API authentication](https://janus.conf.meetecho.com/docs/auth.html), accounting for deployment/version differences rather than assuming defaults."
+  },
+  {
+    "id": "APP-02",
+    "priority": "P1",
+    "modes": "Burp + Paired",
+    "title": "Recording and artifact access",
+    "contract": "Test recording start/stop roles, participant indicators, cross-tenant listing and download, transcript/caption/chat artifacts, signed URL expiry, sharing, deletion and cache persistence. Use owned fixtures. Record storage/encryption/ retention evidence when supplied; technical tests alone cannot certify legal or regulatory compliance."
+  },
+  {
+    "id": "APP-03",
+    "priority": "P2",
+    "modes": "Burp + Paired",
+    "title": "Callbacks, webhooks and fetchers",
+    "contract": "Test webhook signature/timestamp/replay validation and authorization for room, recording and billing events. Check user-controlled recording output, media import, transcription and callback URLs for SSRF with an owned callback or private-service emulator. Follow redirects only within the selected test scope. Link each received callback to the initiating test."
+  },
+  {
+    "id": "APP-04",
+    "priority": "P1",
+    "modes": "Passive",
+    "title": "Component and advisory inventory (T13)",
+    "contract": "Collect defensible browser, SDK, SFU, TURN, gateway, codec and crypto-library version evidence from supplied inventories, bundles or banners. Match maintained vendor advisories with affected configuration and fixed-build information. Mark uncertain fingerprints and version-only matches as leads; backports and disabled features can change applicability. Include source URLs and review dates."
+  },
+  {
+    "id": "APP-05",
+    "priority": "P2",
+    "modes": "Burp + Paired",
+    "title": "WHIP and WHEP adapter",
+    "contract": "For detected endpoints, test bearer/stream-key authorization, session-URL ownership, POST/ PATCH/DELETE lifecycle, trickle ICE, conditional requests, CORS, redirects, discovered ICE-server configuration and cleanup. Verify termination or stream access using a second identity. WHIP has an RFC; pin WHEP behavior to the actual deployed specification/version rather than assuming equivalence. [WHIP security considerations](https://www.rfc-editor.org/rfc/rfc9725.html#section-5)."
+  },
+  {
+    "id": "APP-06",
+    "priority": "P2",
+    "modes": "Passive + Burp",
+    "title": "Provider-specific assessment packs",
+    "contract": "When provider use and account scope are established, add SDK token grants, public serverless functions/assets, webhook controls and exposed configuration checks. Keep provider discovery, credential acquisition and authorized tests distinct. Consider the awesome list's Twilio scanner as an adapter candidate; account access and the installed tool's actual capabilities are prerequisites."
+  },
+  {
+    "id": "SIP-01",
+    "priority": "P2",
+    "modes": "Runner",
+    "title": "Integrated SIP scenarios",
+    "contract": "Promote selected sipexer/SIPPTS/SIPp workflows into versioned adapters for OPTIONS, registration, call setup and teardown with exact WS/WSS path/subprotocol and separate SIP credentials. Retain transaction/dialog transcripts and positive controls. An open WebSocket and successful OPTIONS response do not establish SIP auth."
+  },
+  {
+    "id": "SIP-02",
+    "priority": "P2",
+    "modes": "Runner + Paired",
+    "title": "SIP authorization and dialog attacks",
+    "contract": "Test registration overwrite/removal, Contact manipulation, caller identity spoofing, forged BYE/CANCEL/re-INVITE/REFER and replay against owned dialogs. Check CSeq/Call-ID/tag/route handling, method authorization and cross-extension isolation. Done when a forbidden registration or dialog effect is demonstrated and registrations/calls are cleaned up."
+  },
+  {
+    "id": "SIP-03",
+    "priority": "P2",
+    "modes": "Runner + Paired",
+    "title": "Digest and enumeration",
+    "contract": "Add bounded account-enumeration controls, nonce/replay/algorithm checks and credential-leak scenarios against controlled accounts. Separate password-strength testing from the standard profile. Confirm challenge-bound digest disclosure rather than labelling any Authorization header a leak. [Enable Security's SIP Digest Leak research](https://resources.enablesecurity.com/resources/sipdigestleak-tut.pdf)."
+  },
+  {
+    "id": "SIP-04",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "WebRTC-to-telephony policy",
+    "contract": "Test encryption termination/downgrade on gateway legs, unauthorized call transfer/routing, DTMF/control access and declared dial-plan restrictions using test destinations. Correlate signaling and media; report toll-fraud exposure only from a demonstrated forbidden route, without requiring a chargeable real call."
+  },
+  {
+    "id": "RES-01",
+    "priority": "P2",
+    "modes": "Burp + Paired",
+    "title": "Actual signaling/API rate tests",
+    "contract": "Add measured join/create-room/token issuance, WS connection/message, renegotiation, ICE-restart and reconnect scenarios. Observe server requests, throttling, per-account/tenant effects, a healthy control call and recovery. Keep these separate from T8's local loop; a successful bounded run does not establish resistance to larger loads."
+  },
+  {
+    "id": "RES-02",
+    "priority": "P2",
+    "modes": "Runner + Lab",
+    "title": "Protocol/resource budgets",
+    "contract": "Coordinate TURN allocation churn, incomplete DTLS handshakes, candidate floods, repeated subscriptions, DataChannel buffering and RTP/RTCP/feedback bursts. Fix packet, byte, duration and concurrency ceilings; monitor available server resource metrics and call quality. Stop on defined health thresholds and verify recovery and cleanup. Do not infer server CPU/memory use solely from client latency."
+  },
+  {
+    "id": "RES-03",
+    "priority": "P2",
+    "modes": "Paired",
+    "title": "Isolation under failure",
+    "contract": "Induce selected test peer loss, TURN expiry, renegotiation failure, slow consumers and backend reconnection; verify one tenant/room cannot disrupt another. Measure call setup, stalls, packet loss and time to recover against baseline. Record fault-injection location so ordinary network failure is not misreported as an application DoS."
+  },
+  {
+    "id": "LAB-01",
+    "priority": "P3",
+    "modes": "Lab",
+    "title": "Native parser/decoder integration",
+    "contract": "Support isolated instrumented builds for SDP, RTP/RTCP, STUN/TURN, DTLS, SCTP and relevant audio/video decoders. Import coverage, sanitizer stacks, seeds, minimized cases and build IDs; replay only on matching lab builds. M3+ tests JavaScript-reachable parsing and cannot substitute for this. [Original WebRTC RCE research](https://margin.re/2024/07/you-cant-spell-webrtc-without-rce-part-1/)."
+  },
+  {
+    "id": "LAB-02",
+    "priority": "P3",
+    "modes": "Lab",
+    "title": "Encoded-frame fuzzing",
+    "contract": "Add a media-delivery and reproduction adapter for [H26Forge](https://github.com/h26forge/h26forge), then applicable VP8/VP9/AV1/Opus harnesses as available. Distinguish malformed SDP codec parameters from malformed compressed frames reaching a decoder. Require receiver crash/hang/sanitizer evidence; codec enumeration does not imply fuzz coverage or an exploitable decoder."
+  },
+  {
+    "id": "LAB-03",
+    "priority": "P1",
+    "modes": "Lab",
+    "title": "Known-good/known-bad regression environments",
+    "contract": "Pin [DVRTC](https://github.com/EnableSecurity/DVRTC) and [RTC_Attacks](https://github.com/WebRTC-Thesis-Unina/RTC_Attacks) scenarios plus a maintained minimal app, TURN server, WS service and SFU. Pair vulnerable fixtures with corrected controls. Validate auth, forwarding, room isolation, consent and packet integrity outcomes; do not assume either lab covers every case. Each test pack needs reproducible expected evidence."
+  },
+  {
+    "id": "LAB-04",
+    "priority": "P1",
+    "modes": "Runner",
+    "title": "Evolve the external catalogue",
+    "contract": "Existing stunner, TURNado, TURNt, coturn, SIPPTS, SIPVicious, sipexer, Nmap, testssl and TShark recipes stay useful. First add result import and execution adapters for non-overlapping capabilities; then evaluate PLAN E1–E6. Group by app/endpoint, show provenance/scope/credential age, and use unique artifact paths. A tool's presence or successful process exit must never mark unexecuted modules covered."
+  },
+  {
+    "id": "LAB-05",
+    "priority": "P0",
+    "modes": "Engineering",
+    "title": "Extension and runner self-protection",
+    "contract": "Test bridge origin/Host/session authorization, cross-page command isolation, DNS rebinding, malformed telemetry, bounded decompression/parsing, untrusted report content, CSV/spreadsheet injection and runner argument handling. Preserve credential values losslessly while using format-safe rendering; do not introduce masking. Fuzzed target data must not become shell commands, report scripts, or actions against another engagement."
+  },
+  {
+    "id": "LAB-06",
+    "priority": "P1",
+    "modes": "Engineering",
+    "title": "Regression, packaging, and report completion",
+    "contract": "Every new test needs meaningful positive/negative fixtures, scope-revocation and cleanup checks where relevant, event registration in `EventTypes.KNOWN` and `BridgeServer.summarize`, and Run All/M7 coverage. Add machine-readable result export, replayable scenarios and before/after remediation comparison. For a functional release, align extension metadata and agent `AGENT_VERSION`, document runner prerequisites and page reloads, and verify the packaged artifact."
+  }
+]

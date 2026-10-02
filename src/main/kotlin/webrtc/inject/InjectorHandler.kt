@@ -23,7 +23,8 @@ class InjectorHandler(
     private val api: MontoyaApi,
     private val configStore: ConfigStore,
     private val scope: ScopeGate,
-    private val requests: RequestCatalog? = null
+    private val requests: RequestCatalog? = null,
+    private val capture: webrtc.workflow.RtcCapture? = null
 ) : HttpHandler {
 
     private val metaCspRegex =
@@ -34,6 +35,14 @@ class InjectorHandler(
 
     override fun handleHttpResponseReceived(resp: HttpResponseReceived): ResponseReceivedAction {
         val cfg = configStore.config
+        capture?.let { observer -> runCatching {
+            val original = kotlinx.serialization.json.buildJsonArray {
+                resp.headers().forEach { header -> add(kotlinx.serialization.json.buildJsonObject {
+                    put("name", kotlinx.serialization.json.JsonPrimitive(header.name())); put("value", kotlinx.serialization.json.JsonPrimitive(header.value()))
+                }) }
+            }
+            observer.http(resp.initiatingRequest().url(), resp.bodyToString().take(262145), resp.headerValue("Content-Type").orEmpty(), original)
+        } }
         if (!cfg.injectionEnabled) return ResponseReceivedAction.continueWith(resp)
 
         val request = resp.initiatingRequest()
@@ -62,7 +71,7 @@ class InjectorHandler(
             }
         }
 
-        val agent = buildAgentScript(cfg) ?: return ResponseReceivedAction.continueWith(out)
+        val agent = buildAgentScript(cfg, url) ?: return ResponseReceivedAction.continueWith(out)
 
         var bodyStr = out.bodyToString()
         if (cfg.stripCsp) bodyStr = metaCspRegex.replace(bodyStr, "")
@@ -78,7 +87,7 @@ class InjectorHandler(
         return ResponseReceivedAction.continueWith(out)
     }
 
-    private fun buildAgentScript(cfg: WebRtcConfig): String? {
+    private fun buildAgentScript(cfg: WebRtcConfig, frame: String): String? {
         val agentSrc = if (cfg.agentJsPath.isBlank()) {
             javaClass.getResourceAsStream("/agent/webrtc-agent.js")?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
                 ?: run { api.logging().logToError("[inject] bundled agent missing; rebuild the jar"); return null }
@@ -88,10 +97,11 @@ class InjectorHandler(
             f.readText(StandardCharsets.UTF_8)
         }
         val bridgeBase = "http://${cfg.bridgeHost}:${cfg.bridgePort}"
+        val session = configStore.bridgeSessions.issue(frame)
         val cfgJs = """
             window.__WRTC_CFG__ = {
-              collect: ${jsonStr(bridgeBase + cfg.collectPath)},
-              command: ${jsonStr(bridgeBase + cfg.commandPath)}
+              collect: ${jsonStr(bridgeBase + cfg.collectPath + "?session=" + session)},
+              command: ${jsonStr(bridgeBase + cfg.commandPath + "?session=" + session)}
             };
         """.trimIndent()
         return "\n<script>\n$cfgJs\n$agentSrc\n</script>\n"
@@ -101,7 +111,7 @@ class InjectorHandler(
         haystack.indexOf(needle, ignoreCase = true)
 
     private fun jsonStr(s: String): String =
-        "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        kotlinx.serialization.json.JsonPrimitive(s).toString().replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 }
 
 /** Preserve the first frame-ancestors directive in each comma-separated policy. */

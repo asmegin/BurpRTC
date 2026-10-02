@@ -1,27 +1,27 @@
 # PLAN.MD — WebRTC Test Suite coverage expansion
 
-Status: **Tier 1 (T1–T8) shipped; current build 1.0.5** (extension and agent aligned at
-1.0.5; complete methodology checklist plus twelve-area evidence report;
-integrated Python TLS runner; M4 can run once on the next channel open, with lifecycle diagnostics;
-CSP stripping preserves enforced frame-ancestors policies). Tier 2 (T9–T14)
-and the Tier 3 external catalogue additions remain planned. Target: increase self-contained coverage of the
-extension against Enable Security's WebRTC pentest methodology, the HackTricks WebRTC DoS
-note, the WebRTC Security whitepaper, and `awesome-rtc-hacking`, while keeping the stated
-design boundary (browser W3C JS-API hook + Burp traffic + selected TLS-over-TCP listeners; no raw media packets, no native fuzzing).
+Status: **Tier 1 (T1–T8) + 1.1.0 shipped; current build 1.1.0** (extension and agent aligned at
+1.1.0; 83-item executable assessment registry; managed protocol runner for STUN/TURN,
+authentication matrix, and relay paths; stateful HTTP/WebSocket scenario execution;
+T9 native WebSocket capture and decoding; methodology analysis corrections COR-01–06;
+extension and runner self-protection LAB-05; configuration auto-save). Remaining Tier 2
+(T10–T14) and Tier 3 external catalogue items remain planned in TODO.md. Target: increase
+self-contained coverage while keeping the stated design boundary.
 
-Baseline: extension 0.8.0, agent 0.7.0. Implemented on extension 0.9.0 / agent 0.8.0. All
-changes are additive; the full JVM (70) and agent (30) suites pass.
+Baseline: extension 0.8.0, agent 0.7.0. Current build: 1.1.0. All changes are additive;
+the full JVM (126), agent (36), and Python (11) suites pass.
 
-Tier 1 implementation notes:
+Tier 1 and 1.1.0 implementation notes:
 - T1 events: `stats-snapshot` + `dtls-cert`, with a manual **Capture stats (T1)** button in
   Telemetry (M2) and an automatic bounded burst+steady sampling in the agent.
 - T2/T4/T5 live in `CertificateAnalyzer` + `Detectors`; T3 is a dedicated Run All privacy
   section; T6 extends `sdpFuzzCases`; T7 is `workflow/SignalingMetadata` (passive Burp proxy
-  history read; negotiated TLS version/cipher are not exposed by the Montoya API, so that
-  can now be tested separately with TLS Tests / SSLyze, or external `testssl.sh`); T8 is `SignalingFloodConfig` + `SignalingFloodPanel`
-  (opt-in, default off, Run All includes it only when confirmed).
-- T9 (WebSocket handlers) is feasible — the pinned Montoya 2026.7 API exposes
-  `Proxy.webSocketHistory()` and `ProxyWebSocketCreationHandler` — but is deferred to Tier 2.
+  history read); T8 is `SignalingFloodConfig` + `SignalingFloodPanel`, labeled "Local negotiation loop (T8)".
+- T9 (WebSocket handlers) is shipped in 1.1.0 via Montoya `WebSocketCreatedHandler` and
+  `RtcCapture` (capturing WebSocket upgrades and frames, decoding Socket.IO, nested SDP,
+  and trickle ICE candidates).
+- Managed protocol runner (`protocol_runner.py` / `ProtocolRunner.kt`) shipped in 1.1.0 with
+  duplex network leg scope authorization (`NetworkAuthorization.kt`).
 
 ## Current coverage (do not duplicate)
 

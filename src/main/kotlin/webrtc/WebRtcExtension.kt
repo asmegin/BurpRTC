@@ -24,17 +24,22 @@ class WebRtcExtension : BurpExtension {
         val bridge = BridgeServer(api, configStore, telemetry, activeTests)
         val runner = AuthzMatrixRunner(api, configStore, scope)
         val tlsRunner = TlsScanRunner(configStore, scope::inScope, telemetry)
+        val outcomeStore = webrtc.assessment.OutcomeStore(api, telemetry) { configStore.config.assessment.engagementId }
+        val protocolRunner = webrtc.protocol.ProtocolRunner(configStore, webrtc.assessment.NetworkAuthorization(configStore, scope::inScope), outcomeStore)
+        val assessments = webrtc.assessment.AssessmentController(configStore, outcomeStore, protocolRunner, telemetry)
 
-        api.http().registerHttpHandler(InjectorHandler(api, configStore, scope))
+        val capture = webrtc.workflow.RtcCapture(configStore, scope, telemetry)
+        api.websockets().registerWebSocketCreatedHandler(capture)
+        api.http().registerHttpHandler(InjectorHandler(api, configStore, scope, capture = capture))
 
-        val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests, tlsRunner) { tlsRunner.stop(); bridge.restart() }
+        val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests, tlsRunner, assessments) { tlsRunner.stop(); protocolRunner.stop(); bridge.restart() }
         api.userInterface().registerContextMenuItemsProvider(
             AuthzContextMenu { selected -> suiteTab.runAuthz(selected) }
         )
         api.userInterface().registerSuiteTab("WebRTC", suiteTab)
 
         bridge.start()
-        api.extension().registerUnloadingHandler { tlsRunner.close(); bridge.stop() }
+        api.extension().registerUnloadingHandler { tlsRunner.close(); protocolRunner.close(); bridge.stop() }
 
         api.logging().logToOutput(BuildInfo.loadedMessage())
     }

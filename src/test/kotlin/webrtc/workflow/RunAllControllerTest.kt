@@ -100,7 +100,7 @@ class RunAllControllerTest {
         telemetry.add(event("installed"))
         telemetry.add(iceEvent("candidate:1 1 UDP 1 192.168.1.5 54400 typ host", private = true))
         val lines = runReport(store, telemetry)
-        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("private IP address") })
+        assertTrue(lines.any { it.level == RunAllController.Level.INFO && it.text.contains("client host address 192.168.1.5") })
         assertTrue(lines.any { it.level == RunAllController.Level.OK && it.text.contains("Agent installed") })
         // Configured but with no live agent, live checks are skipped (not run).
         assertTrue(lines.any { it.level == RunAllController.Level.SKIP && it.text.contains("No live in-scope browser page") })
@@ -116,7 +116,7 @@ class RunAllControllerTest {
         val lines = runReport(store, telemetry)
 
         assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("encryption status is unknown") })
-        assertTrue(lines.any { it.level == RunAllController.Level.FINDING && it.text.contains("SDES key exchange") })
+        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("SDES key exchange") })
         assertTrue(lines.any { it.level == RunAllController.Level.INFO && it.text.contains("TURN relay allocation") })
         assertTrue(lines.any { it.level == RunAllController.Level.INFO && it.text.contains("Codecs advertised") && it.text.contains("PCMU") })
     }
@@ -160,7 +160,7 @@ class RunAllControllerTest {
         RunAllController(store, controller, telemetry).passiveReport { lines.add(it) }
 
         assertTrue(lines.any { it.level == RunAllController.Level.OK && it.text.contains("Configuration looks ready") })
-        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("private IP address") })
+        assertTrue(lines.any { it.level == RunAllController.Level.INFO && it.text.contains("client host address 192.168.1.5") })
         // Passive: it must not mention running or queuing live active checks.
         assertFalse(lines.any { it.text.contains("Live active checks") || it.text.contains("queued") })
     }
@@ -185,8 +185,8 @@ class RunAllControllerTest {
         telemetry.add(event("installed"))
         telemetry.add(iceEvent("candidate:2 1 UDP 1 203.0.113.9 54400 typ srflx raddr 10.0.0.7 rport 54400"))
         val lines = runReport(store, telemetry)
-        assertTrue(lines.any { it.level == RunAllController.Level.FINDING && it.text.contains("Public IP address") })
-        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("relay-only") })
+        assertFalse(lines.any { it.level == RunAllController.Level.FINDING })
+        assertTrue(lines.any { it.level == RunAllController.Level.INFO && it.text.contains("client srflx address") })
     }
 
     @Test fun `relay policy suppresses the exposure warning`() {
@@ -196,7 +196,7 @@ class RunAllControllerTest {
         telemetry.add(rawEvent("pc-new", """{"type":"pc-new","detail":"{\"iceServers\":[],\"iceTransportPolicy\":\"relay\"}"}"""))
         telemetry.add(iceEvent("candidate:2 1 UDP 1 203.0.113.9 54400 typ srflx raddr 10.0.0.7 rport 54400"))
         val lines = runReport(store, telemetry)
-        assertTrue(lines.any { it.level == RunAllController.Level.OK && it.text.contains("iceTransportPolicy=relay") })
+        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("policy mismatch") })
         assertFalse(lines.any { it.text.contains("No relay-only") })
     }
 
@@ -231,9 +231,9 @@ class RunAllControllerTest {
         telemetry.add(event("installed"))
         val lines = mutableListOf<RunAllController.Line>()
         val controller = ActiveTestController(store, { true }, telemetry) { System.currentTimeMillis() }
-        RunAllController(store, controller, telemetry) {
+        RunAllController(store, controller, telemetry, signalingEndpoints = {
             listOf(SignalingMetadata.Endpoint("https://example.test:8443", true, false, 3))
-        }.passiveReport { lines.add(it) }
+        }).passiveReport { lines.add(it) }
         assertTrue(lines.any { it.level == RunAllController.Level.INFO && it.text.contains("https://example.test:8443") })
         assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("Strict-Transport-Security") })
     }

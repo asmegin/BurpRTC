@@ -19,7 +19,7 @@ internal class BridgeHttpServer(
     private val onError: (Exception) -> Unit,
     private val handler: (Request) -> Response
 ) : Closeable {
-    data class Request(val method: String, val path: String, val body: String, val query: String? = null)
+    data class Request(val method: String, val path: String, val body: String, val query: String? = null, val headers: Map<String, String> = emptyMap())
     data class Response(val code: Int, val body: String = "", val contentType: String = "text/plain")
 
     private val listener = ServerSocket()
@@ -146,7 +146,7 @@ internal class BridgeHttpServer(
             val name = line.substring(0, colon).lowercase(Locale.ROOT)
             if (!name.matches(Regex("[!#$%&'*+.^_`|~0-9a-z-]+"))) throw HttpFailure(400)
             val value = line.substring(colon + 1).trim()
-            if (headers.put(name, value) != null && name in setOf("content-length", "transfer-encoding")) {
+            if (headers.put(name, value) != null && name in setOf("content-length", "transfer-encoding", "host", "origin")) {
                 throw HttpFailure(400)
             }
         }
@@ -195,7 +195,7 @@ internal class BridgeHttpServer(
         } else {
             readBody(size.toInt())
         }
-        return Request(start[0], uri.path, body.toString(Charsets.UTF_8), uri.rawQuery)
+        return Request(start[0], uri.path, body.toString(Charsets.UTF_8), uri.rawQuery, headers)
     }
 
     private fun writeResponse(client: Socket, response: Response) {
@@ -204,6 +204,7 @@ internal class BridgeHttpServer(
             200 -> "OK"
             204 -> "No Content"
             400 -> "Bad Request"
+            403 -> "Forbidden"
             404 -> "Not Found"
             408 -> "Request Timeout"
             413 -> "Content Too Large"

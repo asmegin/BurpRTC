@@ -86,7 +86,8 @@ class DetectorsTest {
             listOf(Detectors.IceCredential("aaaa", "p".repeat(24))),
             listOf(Detectors.IceCredential("aaaa", "p".repeat(24)))
         )
-        assertNotNull(Detectors.iceCredentialReuse(reused))
+        assertNull(Detectors.iceCredentialReuse(reused))
+        assertNotNull(Detectors.iceCredentialReuse(reused, deliberateRestart = true))
         val rotated = listOf(
             listOf(Detectors.IceCredential("aaaa", "p".repeat(24))),
             listOf(Detectors.IceCredential("bbbb", "q".repeat(24)))

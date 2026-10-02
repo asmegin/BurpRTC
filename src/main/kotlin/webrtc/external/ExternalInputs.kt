@@ -15,7 +15,12 @@ data class ObservedIceServer(
     val urls: List<String>,
     val username: String? = null,
     val credential: String? = null,
-    val credentialType: String? = null
+    val credentialType: String? = null,
+    val frame: String = "",
+    val agent: String = "",
+    val peer: String = "",
+    val observedAt: String = "",
+    val source: String = ""
 )
 
 /** A parsed ICE server URL (stun/stuns/turn/turns). */
@@ -46,9 +51,14 @@ data class ExternalInputs(
             events.mapNotNullTo(origins) { it.frame.takeIf { f -> f.startsWith("http://") || f.startsWith("https://") } }
 
             val servers = LinkedHashMap<String, ObservedIceServer>()
-            events.filter { it.type == "pc-new" }.forEach { event ->
-                field(event, "detail")?.let { detail ->
-                    parseIceServersFromDetail(detail).forEach { servers[it.urls.joinToString(",")] = it }
+            events.filter { it.type in setOf("pc-new", "pc-config", "signaling-observation") }.forEach { event ->
+                val detail = if (event.type == "signaling-observation") event.raw else field(event, "detail")
+                detail?.let {
+                    parseIceServersFromDetail(it).forEach { server ->
+                        val observed = server.copy(frame = event.frame, agent = field(event, "agent").orEmpty(), peer = event.pcId,
+                            observedAt = event.time, source = "event:${event.seq}")
+                        servers[listOf(event.frame, observed.agent, event.pcId, field(event, "connectionId"), server.urls.joinToString(","), server.username, server.credential).joinToString("\u0000")] = observed
+                    }
                 }
             }
             // Config is a first-class observation for the TURN/STUN probe.
@@ -56,7 +66,7 @@ data class ExternalInputs(
                 val observed = ObservedIceServer(
                     urls = listOf(config.iceProbe.url),
                     username = config.iceProbe.username.ifBlank { null },
-                    credential = config.iceProbe.credential.ifBlank { null }
+                    credential = config.iceProbe.credential.ifBlank { null }, source = "Config M6"
                 )
                 servers[observed.urls.joinToString(",")] = observed
             }

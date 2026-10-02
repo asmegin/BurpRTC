@@ -38,10 +38,17 @@ class BridgeServer(
                 InetSocketAddress(cfg.bridgeHost, cfg.bridgePort),
                 onError = { api.logging().logToError("[bridge] handler error: ${it.message}") }
             ) { request ->
+                val token = parameter(request, "session").orEmpty()
+                val origin = request.headers["origin"].orEmpty()
+                val allowedHosts = setOf("${cfg.bridgeHost}:${cfg.bridgePort}", "localhost:${cfg.bridgePort}")
+                if (request.path !in setOf(cfg.collectPath, cfg.commandPath)) return@BridgeHttpServer BridgeHttpServer.Response(404)
+                if (request.headers["host"] !in allowedHosts || !configStore.bridgeSessions.acceptsOrigin(token, origin))
+                    return@BridgeHttpServer BridgeHttpServer.Response(403)
                 when (request.path) {
                     cfg.collectPath -> {
-                        if (!request.method.equals("OPTIONS", true)) parseAndStore(request.body)
-                        BridgeHttpServer.Response(204)
+                        if (request.method == "OPTIONS") BridgeHttpServer.Response(204)
+                        else if (request.method == "POST" && parseAndStore(request.body, token, origin)) BridgeHttpServer.Response(204)
+                        else BridgeHttpServer.Response(403)
                     }
                     cfg.commandPath -> {
                         if (request.method.equals("OPTIONS", true)) BridgeHttpServer.Response(204)
@@ -60,6 +67,7 @@ class BridgeServer(
     @Synchronized
     fun stop() {
         activeTests.cancelAll()
+        configStore.bridgeSessions.clear()
         server?.close()
         server = null
     }
@@ -69,12 +77,11 @@ class BridgeServer(
 
     private fun handleCommand(request: BridgeHttpServer.Request): BridgeHttpServer.Response {
         val cfg = configStore.config
-        fun parameter(name: String) = runCatching {
-            request.query.orEmpty().split('&').singleOrNull { it.substringBefore('=') == name }
-                ?.substringAfter('=', "")?.let { URLDecoder.decode(it, Charsets.UTF_8) }
-        }.getOrNull()
+        fun parameter(name: String) = parameter(request, name)
         val frame = parameter("frame").orEmpty()
         val agent = parameter("agent").orEmpty()
+        if (!configStore.bridgeSessions.permits(parameter("session").orEmpty(), request.headers["origin"].orEmpty(), frame, agent))
+            return BridgeHttpServer.Response(403)
         val allowed = request.method == "GET" && activeTests.pageAllowed(frame)
         val doc = buildJsonObject {
             put("ok", true)
@@ -103,18 +110,26 @@ class BridgeServer(
         return BridgeHttpServer.Response(200, doc.toString(), "application/json")
     }
 
-    private fun parseAndStore(body: String) {
-        if (body.isBlank()) return
-        val element = runCatching { json.parseToJsonElement(body) }.getOrNull() ?: return
+    private fun parameter(request: BridgeHttpServer.Request, name: String) = runCatching {
+        request.query.orEmpty().split('&').singleOrNull { it.substringBefore('=') == name }
+            ?.substringAfter('=', "")?.let { URLDecoder.decode(it, Charsets.UTF_8) }
+    }.getOrNull()
+
+    private fun parseAndStore(body: String, token: String, origin: String): Boolean {
+        if (body.isBlank() || !boundedJson(body)) return false
+        val element = runCatching { json.parseToJsonElement(body) }.getOrNull() ?: return false
         val events = when (element) {
             is JsonArray -> element.mapNotNull { it as? JsonObject }
             is JsonObject -> listOf(element)
             else -> emptyList()
         }
+        if (events.size > 128 || events.any { !configStore.bridgeSessions.permits(token, origin, it.strOr("frame", ""), it.strOr("agent", "")) ||
+                !activeTests.pageAllowed(it.strOr("frame", "")) }) return false
         for (obj in events) {
             activeTests.observe(obj)
             if ((obj["type"] as? JsonPrimitive)?.contentOrNull != "agent-state") store(obj)
         }
+        return true
     }
 
     private fun store(obj: JsonObject) {
@@ -122,7 +137,7 @@ class BridgeServer(
         val frame = obj.strOr("frame", "top")
         val pcId = obj.strOr("pc", "")
         val raw = obj.toString()
-        val private = obj["private"]?.jsonPrimitive?.booleanOrNull ?: Detectors.hasPrivateAddress(raw)
+        val private = (obj["private"] as? JsonPrimitive)?.booleanOrNull ?: Detectors.hasPrivateAddress(raw)
         val summary = summarize(type, obj)
         telemetry.add(
             TelemetryEvent(
@@ -144,6 +159,8 @@ class BridgeServer(
         "sdp-local", "sdp-remote" -> "sdp ${obj.strOr("sdp", "").length} bytes"
         "dc-send", "dc-recv" -> "${obj.strOr("label", "")} ${obj.strOr("bytes", "")}B"
         "dc-created" -> "${obj.strOr("label", "")} ${obj.strOr("detail", "")} (${obj.strOr("state", "unknown")})"
+        "assessment-result", "signaling-observation", "ws-connection", "ws-binary", "ws-closed", "original-policy",
+        "pc-config", "pc-operation", "ice-input", "getUserMedia-result", "browser-capabilities", "capture-result", "track-state",
         "dc-state", "pc-state", "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error" -> obj.strOr("detail", "")
         "getUserMedia" -> obj.strOr("constraints", "")
         "stats-snapshot" -> {
@@ -157,6 +174,16 @@ class BridgeServer(
     }
 
     private fun JsonObject.strOr(key: String, default: String): String =
-        this[key]?.jsonPrimitive?.contentOrNull ?: default
+        (this[key] as? JsonPrimitive)?.contentOrNull ?: default
 
+}
+
+/** Reject pathological nesting before a recursive JSON parser sees untrusted input. */
+internal fun boundedJson(text: String, maxDepth: Int = 32): Boolean {
+    var depth = 0; var quoted = false; var escaped = false
+    for (c in text) {
+        if (quoted) { if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '"') quoted = false }
+        else when (c) { '"' -> quoted = true; '{', '[' -> if (++depth > maxDepth) return false; '}', ']' -> if (--depth < 0) return false }
+    }
+    return depth == 0 && !quoted
 }

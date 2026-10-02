@@ -3,8 +3,14 @@ package webrtc.config
 import burp.api.montoya.MontoyaApi
 import kotlinx.serialization.json.Json
 
-/** Loads/saves Module 0 config in the Burp project file. Credentials live only here. */
+/** Persists configuration in the Burp project. Full credentials also appear in telemetry and exports. */
 class ConfigStore(private val api: MontoyaApi) {
+    val bridgeSessions = webrtc.bridge.BridgeSessions()
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<(WebRtcConfig) -> Unit>()
+    fun onChange(listener: (WebRtcConfig) -> Unit): AutoCloseable {
+        listeners += listener
+        return AutoCloseable { listeners -= listener }
+    }
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
@@ -35,9 +41,11 @@ class ConfigStore(private val api: MontoyaApi) {
     }
 
     fun save(newConfig: WebRtcConfig) {
+        if (newConfig == config) return
         api.persistence().extensionData()
             .setString(key, json.encodeToString(WebRtcConfig.serializer(), newConfig))
         config = newConfig
+        listeners.forEach { listener -> runCatching { listener(newConfig) } }
     }
 
     fun toJson(cfg: WebRtcConfig): String = json.encodeToString(WebRtcConfig.serializer(), cfg)

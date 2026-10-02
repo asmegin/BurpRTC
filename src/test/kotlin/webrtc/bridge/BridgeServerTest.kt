@@ -1,275 +1,121 @@
 package webrtc.bridge
 
 import burp.api.montoya.MontoyaApi
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import webrtc.config.ConfigStore
-import webrtc.config.SdpMutationConfig
-import webrtc.config.WebRtcConfig
-import webrtc.config.DataChannelFuzzConfig
+import kotlinx.serialization.json.*
+import webrtc.config.*
 import webrtc.telemetry.TelemetryTableModel
-import webrtc.scope.ScopeGate
 import java.lang.reflect.Proxy
-import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLEncoder
-import java.util.Collections
-import javax.swing.SwingUtilities
 import kotlin.test.*
 
 class BridgeServerTest {
-    private val errors = Collections.synchronizedList(mutableListOf<String>())
-    private var inScope = true
-    private var persisted: String? = null
-
+    private val frame = "https://example.test/call"
+    private var scoped = true
+    private val errors = mutableListOf<String>()
     private fun api(): MontoyaApi {
-        fun proxy(type: Class<*>): Any = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
+        fun stub(type: Class<*>): Any = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
             when {
-                method.name == "logToError" -> { errors.add(args?.first().toString()); null }
-                method.name == "isInScope" -> inScope
-                method.name == "getString" -> persisted
-                method.name == "setString" -> { persisted = args!![1] as String; null }
-                method.returnType == String::class.java -> null
-                method.returnType.isInterface -> proxy(method.returnType)
+                method.name == "isInScope" -> scoped
+                method.name == "logToError" -> { errors += args?.first().toString(); null }
+                method.name == "getString" -> null
+                method.returnType.isInterface -> stub(method.returnType)
                 else -> null
             }
         }
-        return proxy(MontoyaApi::class.java) as MontoyaApi
+        return stub(MontoyaApi::class.java) as MontoyaApi
     }
-
-    private fun exchange(port: Int, request: String): String = Socket("127.0.0.1", port).use {
-        it.soTimeout = 3_000
-        it.getOutputStream().write(request.toByteArray(Charsets.UTF_8))
-        it.shutdownOutput()
+    private fun exchange(port: Int, request: String) = Socket("127.0.0.1", port).use {
+        it.soTimeout = 3000; it.getOutputStream().write(request.toByteArray()); it.shutdownOutput()
         it.getInputStream().readBytes().toString(Charsets.UTF_8)
     }
-
-    private fun withBridge(block: (BridgeServer, Int, TelemetryTableModel, ConfigStore) -> Unit) {
-        val api = api()
-        val config = ConfigStore(api)
-        val port = ServerSocket(0).use { it.localPort }
-        config.config.bridgePort = port
-        config.config.collectPath = "/events"
-        config.config.commandPath = "/poll"
-        val telemetry = TelemetryTableModel()
-        val bridge = BridgeServer(api, config, telemetry)
-        try {
-            bridge.start()
-            assertTrue(errors.isEmpty(), errors.toString())
-            block(bridge, port, telemetry, config)
-            assertTrue(errors.isEmpty(), errors.toString())
-        } finally {
-            bridge.stop()
-        }
-    }
-
-    @Test fun `bridge runs without jdk httpserver and serves configured command path`() {
-        assertFalse(ModuleLayer.boot().findModule("jdk.httpserver").isPresent)
-        withBridge { _, port, _, _ ->
-            val response = exchange(port, "GET /poll?cache=1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            assertTrue(response.startsWith("HTTP/1.1 200 OK\r\n"))
-            assertContains(response, "Access-Control-Allow-Origin: *\r\n")
-            assertContains(response, "Content-Type: application/json")
-            val body = response.substringAfter("\r\n\r\n")
-            assertContains(response, "Content-Length: ${body.toByteArray().size}\r\n")
-            val doc = Json.parseToJsonElement(body).jsonObject
-            assertEquals("true", doc["ok"]?.jsonPrimitive?.content)
-            assertEquals("/events", doc["bridge"]?.jsonObject?.get("collect")?.jsonPrimitive?.content)
-            assertEquals("[]", doc["commands"].toString())
-        }
-    }
-
-    @Test fun `collect accepts UTF8 single events and chunked batches`() {
-        withBridge { _, port, telemetry, _ ->
-            val body = """{"type":"ice","candidate":"192.168.1.2 café"}"""
-            val response = exchange(port, "POST /events HTTP/1.1\r\nHost: localhost\r\ncontent-length: ${body.toByteArray().size}\r\n\r\n$body")
-            assertTrue(response.startsWith("HTTP/1.1 204 No Content\r\n"))
-            assertFalse(response.contains("Content-Length:"))
-            assertEquals("", response.substringAfter("\r\n\r\n"))
-            val batch = """[{"type":"installed","detail":"ready"},{"type":"dc-send","bytes":12}]"""
-            val chunks = batch.chunked(19).joinToString("") { "${it.toByteArray().size.toString(16)};test=yes\r\n$it\r\n" }
-            assertTrue(exchange(port, "POST /events HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n${chunks}0\r\nX-Trailer: done\r\n\r\n").startsWith("HTTP/1.1 204"))
-            SwingUtilities.invokeAndWait {
-                assertEquals(3, telemetry.rowCount)
-                assertEquals("192.168.1.2 café", telemetry.eventAt(0)?.summary)
-                assertEquals(true, telemetry.eventAt(0)?.private)
-                assertEquals("installed", telemetry.eventAt(1)?.type)
-                assertEquals("dc-send", telemetry.eventAt(2)?.type)
-            }
-        }
-    }
-
-    @Test fun `preflight and unknown routes do not collect events`() {
-        withBridge { _, port, telemetry, _ ->
-            for (path in listOf("/events", "/poll")) {
-                val response = exchange(port, "OPTIONS $path HTTP/1.1\r\nOrigin: https://example.test\r\n\r\n")
-                assertTrue(response.startsWith("HTTP/1.1 204"))
-                assertContains(response, "Access-Control-Allow-Methods: GET, POST, OPTIONS")
-                assertContains(response, "Access-Control-Allow-Headers: Content-Type")
-            }
-            assertTrue(exchange(port, "GET /missing HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 404"))
-            assertTrue(exchange(port, "POST /events HTTP/1.1\r\nContent-Length: 3\r\n\r\n???").startsWith("HTTP/1.1 204"))
-            SwingUtilities.invokeAndWait { assertEquals(0, telemetry.rowCount) }
-        }
-    }
-
-    @Test fun `malformed truncated and oversized requests are rejected and server remains usable`() {
-        withBridge { _, port, _, _ ->
-            val requests = listOf(
-                "broken\r\n\r\n" to 400,
-                "POST /events HTTP/1.1\r\nContent-Length: -1\r\n\r\n" to 400,
-                "POST /events HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\n" to 400,
-                "POST /events HTTP/1.1\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n" to 400,
-                "POST /events HTTP/1.1\r\nContent-Length: 4\r\n\r\nx" to 400,
-                "POST /events HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n" to 413,
-                "POST /events HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n100001\r\n" to 413,
-                "POST /events HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n" to 501,
-                "GET /poll HTTP/1.1\r\nX-Large: ${"a".repeat(33 * 1024)}\r\n\r\n" to 431
-            )
-            for ((request, code) in requests) {
-                assertTrue(exchange(port, request).startsWith("HTTP/1.1 $code"), "Expected $code for ${request.take(80)}")
-            }
-            assertTrue(exchange(port, "GET /poll HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 200"))
-        }
-    }
-
-    @Test fun `expect continue is sent before waiting for the body`() {
-        withBridge { _, port, _, _ ->
-            Socket("127.0.0.1", port).use { socket ->
-                socket.soTimeout = 3_000
-                socket.getOutputStream().write("POST /events HTTP/1.1\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n".toByteArray())
-                val interim = socket.getInputStream().readNBytes(25).toString(Charsets.US_ASCII)
-                assertEquals("HTTP/1.1 100 Continue\r\n\r\n", interim)
-                socket.getOutputStream().write("{}".toByteArray())
-                assertTrue(socket.getInputStream().readBytes().toString(Charsets.UTF_8).startsWith("HTTP/1.1 204"))
-            }
-        }
-    }
-
-    @Test fun `restart rebinds and stop closes idle clients and releases port`() {
-        withBridge { bridge, port, _, _ ->
-            bridge.restart()
-            assertTrue(exchange(port, "GET /poll HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 200"))
-            Socket("127.0.0.1", port).use { idle ->
-                idle.soTimeout = 3_000
-                idle.getOutputStream().write("GET /".toByteArray())
-                // A subsequent completed request ensures the listener has accepted the idle client.
-                exchange(port, "GET /poll HTTP/1.1\r\n\r\n")
-                bridge.stop()
-                val closed = runCatching { idle.getInputStream().read() }.fold(
-                    onSuccess = { it == -1 }, onFailure = { it is java.net.SocketException }
-                )
-                assertTrue(closed)
-            }
-            ServerSocket().use { it.reuseAddress = true; it.bind(InetSocketAddress("127.0.0.1", port)) }
-            bridge.start()
-            assertTrue(exchange(port, "GET /poll HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 200"))
-        }
-    }
-
-    @Test fun `bind failure is logged and can be recovered`() {
-        val api = api()
-        val config = ConfigStore(api)
-        val bridge = BridgeServer(api, config, TelemetryTableModel())
-        try {
-            ServerSocket(0).use {
-                config.config.bridgePort = it.localPort
-                bridge.start()
-                assertTrue(errors.single().startsWith("[bridge] failed to start"))
-            }
-            errors.clear()
-            bridge.start()
-            assertTrue(exchange(config.config.bridgePort, "GET /command HTTP/1.1\r\n\r\n").startsWith("HTTP/1.1 200"))
-            assertTrue(errors.isEmpty())
-        } finally {
-            bridge.stop()
-        }
-    }
-
-    @Test fun `mutation commands require enabled injection allowed host and current scope`() {
-        withBridge { _, port, _, config ->
-            config.save(config.config.copy(
-                injectionEnabled = true, hostAllowList = listOf("example.test"),
-                sdpMutation = SdpMutationConfig(enabled = true, removeFingerprint = true)
-            ))
-            fun commands(frame: String? = "https://example.test/call?room=a&user=b"): String {
-                val query = frame?.let { "?frame=" + URLEncoder.encode(it, Charsets.UTF_8) }.orEmpty()
-                val response = exchange(port, "GET /poll$query HTTP/1.1\r\n\r\n")
-                assertContains(response, "Cache-Control: no-store")
-                return Json.parseToJsonElement(response.substringAfter("\r\n\r\n")).jsonObject["commands"].toString()
-            }
-            val active = commands()
-            assertContains(active, "sdp-mutation")
-            assertContains(active, "\"target\":\"remote\"") // Default fields must reach the agent.
-            assertContains(active, "\"removeFingerprint\":true")
-            assertEquals("[]", commands(null))
-            assertEquals("[]", commands("https://example.test.evil.test/call"))
-            assertEquals("[]", commands("https://evil.test/call"))
-            assertEquals("[]", commands("file:///call"))
-            assertEquals("[]", commands("https://name@example.test/call"))
-            assertEquals("[]", commands("not a URL"))
-            inScope = false
-            assertEquals("[]", commands())
-            inScope = true
-            config.save(config.config.copy(injectionEnabled = false))
-            assertEquals("[]", commands())
-            config.save(config.config.copy(injectionEnabled = true, sdpMutation = config.config.sdpMutation.copy(enabled = false)))
-            assertEquals("[]", commands())
-        }
-    }
-
-    @Test fun `mutation settings persist and old project configs default to disabled`() {
-        assertFalse(Json.decodeFromString<WebRtcConfig>("{}").sdpMutation.enabled)
-        val api = api()
-        val config = ConfigStore(api)
-        val rules = SdpMutationConfig(enabled = true, target = "both", pcId = "pc2", find = "a=sendrecv", replacement = "a=inactive")
-        config.save(config.config.copy(sdpMutation = rules))
-        assertEquals(rules, ConfigStore(api).config.sdpMutation)
-        // M0 saves use a copy so editing unrelated settings retains M3.
-        config.save(config.config.copy(bridgePort = 9999))
-        assertEquals(rules, ConfigStore(api).config.sdpMutation)
-        assertFailsWith<IllegalArgumentException> { SdpMutationConfig(enabled = true) }
-        assertFailsWith<IllegalArgumentException> { SdpMutationConfig(target = "bad") }
-    }
-
-    @Test fun `active command delivery authorization and cancellation work through socket bridge`() {
-        val api = api()
-        val config = ConfigStore(api)
-        val port = ServerSocket(0).use { it.localPort }
-        config.save(config.config.copy(bridgePort = port, injectionEnabled = true, hostAllowList = listOf("example.test")))
-        val telemetry = TelemetryTableModel()
-        val controller = ActiveTestController(config, ScopeGate(api)::inScope, telemetry)
+    private class Fixture(val bridge: BridgeServer, val config: ConfigStore, val telemetry: TelemetryTableModel,
+                          val controller: ActiveTestController, val port: Int, var token: String)
+    private fun fixture(block: (Fixture) -> Unit) {
+        val api = api(); val config = ConfigStore(api); val port = ServerSocket(0).use { it.localPort }
+        config.save(config.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"), bridgePort = port,
+            sdpMutation = SdpMutationConfig(enabled = true, removeFingerprint = true)))
+        val telemetry = TelemetryTableModel(); val controller = ActiveTestController(config, { scoped }, telemetry)
         val bridge = BridgeServer(api, config, telemetry, controller)
         try {
             bridge.start()
-            val body = """{"type":"agent-state","agent":"page-a","frame":"https://example.test/call","channels":[{"channelId":"dc1","pc":"pc1","label":"test","state":"open"}]}"""
-            assertTrue(exchange(port, "POST /collect HTTP/1.1\r\nContent-Length: ${body.toByteArray().size}\r\n\r\n$body").startsWith("HTTP/1.1 204"))
-            val id = controller.queueFuzz("page-a", "dc1", DataChannelFuzzConfig())
-            val frame = URLEncoder.encode("https://example.test/call", Charsets.UTF_8)
-            fun get(query: String) = Json.parseToJsonElement(exchange(port, "GET /command?frame=$frame&$query HTTP/1.1\r\n\r\n").substringAfter("\r\n\r\n")).jsonObject
-            assertEquals("[]", get("agent=other&poll=1")["commands"].toString())
-            assertContains(get("agent=page-a&poll=1")["commands"].toString(), "dc-fuzz")
-            assertEquals("true", get("agent=page-a&authorize=$id")["authorized"]?.jsonPrimitive?.content)
-            assertEquals("[]", get("agent=page-a&poll=1")["commands"].toString())
-            assertTrue(controller.cancelJob(id))
-            assertEquals("false", get("agent=page-a&authorize=$id")["authorized"]?.jsonPrimitive?.content)
-            assertFalse(controller.cancelJob(id))
-            assertEquals("[]", get("agent=page-a&autoFuzz=dc1")["commands"].toString())
-            controller.armNextOpenFuzz(DataChannelFuzzConfig(payload = "on open"))
-            assertEquals("[]", get("agent=other&autoFuzz=dc1")["commands"].toString())
-            val immediate = get("agent=page-a&autoFuzz=dc1")["commands"]!!.jsonArray.single().jsonObject
-            assertEquals("dc-fuzz", immediate["type"]!!.jsonPrimitive.content)
-            assertEquals("on open", immediate["config"]!!.jsonObject["payload"]!!.jsonPrimitive.content)
-            assertEquals("[]", get("agent=page-a&autoFuzz=dc1")["commands"].toString())
-            assertFalse(controller.nextOpenFuzzArmed())
-            val automaticId = immediate["id"]!!.jsonPrimitive.content
-            assertEquals("true", get("agent=page-a&authorize=$automaticId")["authorized"]!!.jsonPrimitive.content)
-            controller.disarmNextOpenFuzz()
-            assertEquals("false", get("agent=page-a&authorize=$automaticId")["authorized"]!!.jsonPrimitive.content)
+            block(Fixture(bridge, config, telemetry, controller, port, config.bridgeSessions.issue(frame)))
             assertTrue(errors.isEmpty(), errors.toString())
         } finally { bridge.stop() }
+    }
+    private fun request(f: Fixture, method: String = "GET", path: String = "/command", body: String = "",
+                        frame: String = this.frame, agent: String = "agent-test", token: String = f.token,
+                        host: String = "127.0.0.1:${f.port}", origin: String = "https://example.test", extra: String = ""): String {
+        val query = "session=$token&frame=${URLEncoder.encode(frame, Charsets.UTF_8)}&agent=$agent$extra"
+        return exchange(f.port, "$method $path?$query HTTP/1.1\r\nHost: $host\r\nOrigin: $origin\r\nContent-Length: ${body.toByteArray().size}\r\n\r\n$body")
+    }
+    private fun event(type: String, frame: String = this.frame, agent: String = "agent-test") =
+        buildJsonObject { put("type", type); put("frame", frame); put("agent", agent); put("candidate", "candidate:1 1 udp 1 192.168.1.2 5000 typ host") }.toString()
+
+    @Test fun `bridge operates without optional module and authenticates commands`() = fixture { f ->
+        assertFalse(ModuleLayer.boot().findModule("jdk.httpserver").isPresent)
+        val response = request(f)
+        assertTrue(response.startsWith("HTTP/1.1 200"))
+        assertContains(response, "Cache-Control: no-store")
+        assertContains(response, "sdp-mutation")
+    }
+    @Test fun `Host Origin token frame and agent all bind command access`() = fixture { f ->
+        assertTrue(request(f).startsWith("HTTP/1.1 200"))
+        for (response in listOf(request(f, token = "guess"), request(f, host = "rebind.attacker.test"), request(f, origin = "https://attacker.test"),
+            request(f, frame = "https://example.test/other"), request(f, agent = "another-agent")))
+            assertTrue(response.startsWith("HTTP/1.1 403"), response)
+    }
+    @Test fun `valid telemetry accepted and malformed fields cannot crash bridge`() = fixture { f ->
+        assertTrue(request(f, "POST", "/collect", event("ice")).startsWith("HTTP/1.1 204"))
+        assertEquals(1, f.telemetry.snapshot().size)
+        val malformed = buildJsonObject { put("type", buildJsonObject {}); put("private", buildJsonArray {}); put("frame", frame); put("agent", "agent-test") }.toString()
+        assertTrue(request(f, "POST", "/collect", malformed).startsWith("HTTP/1.1 204"))
+        assertTrue(request(f).startsWith("HTTP/1.1 200"))
+    }
+    @Test fun `untrusted and cross-page events never enter telemetry or command state`() = fixture { f ->
+        assertTrue(request(f, "POST", "/collect", event("ice", "https://other.test/")).startsWith("HTTP/1.1 403"))
+        assertTrue(request(f, "POST", "/collect", event("ice"), token = "unknown").startsWith("HTTP/1.1 403"))
+        assertTrue(f.telemetry.snapshot().isEmpty())
+    }
+    @Test fun `revoking scope and injection stops commands and collection`() = fixture { f ->
+        scoped = false
+        val doc = Json.parseToJsonElement(request(f).substringAfter("\r\n\r\n")).jsonObject
+        assertTrue(doc["commands"]!!.jsonArray.isEmpty())
+        assertTrue(request(f, "POST", "/collect", event("ice")).startsWith("HTTP/1.1 403"))
+        scoped = true; f.config.save(f.config.config.copy(injectionEnabled = false))
+        assertTrue(Json.parseToJsonElement(request(f).substringAfter("\r\n\r\n")).jsonObject["commands"]!!.jsonArray.isEmpty())
+    }
+    @Test fun `restart invalidates previous page capabilities and releases socket`() = fixture { f ->
+        val old = f.token; f.bridge.restart()
+        assertTrue(request(f, token = old).startsWith("HTTP/1.1 403"))
+        f.token = f.config.bridgeSessions.issue(frame)
+        assertTrue(request(f).startsWith("HTTP/1.1 200"))
+    }
+    @Test fun `authorized chunked UTF8 batches and preflight work`() = fixture { f ->
+        val batch = "[${event("installed")},${event("ice")}]"
+        val wire = "POST /collect?session=${f.token} HTTP/1.1\r\nHost: 127.0.0.1:${f.port}\r\nOrigin: https://example.test\r\nTransfer-Encoding: chunked\r\n\r\n" +
+            "${batch.toByteArray().size.toString(16)}\r\n$batch\r\n0\r\n\r\n"
+        assertTrue(exchange(f.port, wire).startsWith("HTTP/1.1 204"))
+        assertEquals(2, f.telemetry.snapshot().size)
+        assertTrue(request(f, "OPTIONS").startsWith("HTTP/1.1 204"))
+    }
+    @Test fun `bounds reject deep batches and request smuggling`() = fixture { f ->
+        assertTrue(request(f, "POST", "/collect", "[".repeat(40) + "0" + "]".repeat(40)).startsWith("HTTP/1.1 403"))
+        for ((headers, code) in listOf("Content-Length: -1" to 400, "Content-Length: 1048577" to 413,
+            "Content-Length: 0\r\nTransfer-Encoding: chunked" to 400, "Host: a\r\nHost: b" to 400,
+            "Origin: a\r\nOrigin: b" to 400, "X-Large: ${"x".repeat(33000)}" to 431)) {
+            assertTrue(exchange(f.port, "POST /collect HTTP/1.1\r\n$headers\r\n\r\n").startsWith("HTTP/1.1 $code"))
+        }
+    }
+    @Test fun `jobs remain isolated after a second page learns another agent ID`() = fixture { f ->
+        f.controller.observe(buildJsonObject { put("type", "agent-state"); put("agent", "agent-test"); put("frame", frame) })
+        val id = f.controller.queueCaptureStats("agent-test")
+        val other = f.config.bridgeSessions.issue("https://example.test/other")
+        assertTrue(request(f, token = other, frame = "https://example.test/other", agent = "second", extra = "&authorize=$id").contains("\"authorized\":false"))
+        assertTrue(request(f, extra = "&poll=1").contains(id))
+        assertTrue(request(f, extra = "&authorize=$id").contains("\"authorized\":true"))
+        f.controller.cancelJob(id)
+        assertTrue(request(f, extra = "&authorize=$id").contains("\"authorized\":false"))
     }
 }

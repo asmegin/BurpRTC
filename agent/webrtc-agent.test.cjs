@@ -132,11 +132,11 @@ test('description and trickle ICE operations retain their call order', async () 
   const h = harness({ removeFingerprint: true });
   const pc = h.peer();
   await Promise.all([pc.setRemoteDescription({ type: 'offer', sdp: SDP }), pc.addIceCandidate({ candidate: 'test' }), pc.setLocalDescription()]);
-  assert.deepEqual(h.nativeCalls.map(c => c[0]), ['remote', 'candidate', 'local']);
-  assert.equal(h.nativeCalls[2][1], undefined);
+  assert.deepEqual(h.nativeCalls.map(c => c[0]), ['remote', 'candidate', 'createOffer', 'local']);
+  assert.equal(h.nativeCalls[3][1].type, 'offer');
 });
 
-test('rollback and legacy callback setters pass through intact', async () => {
+test('rollback passes through and legacy callback setters receive mutation and telemetry', async () => {
   const h = harness({ removeFingerprint: true });
   const pc = h.peer(), desc = { type: 'rollback', sdp: '' };
   await pc.setRemoteDescription(desc);
@@ -144,8 +144,10 @@ test('rollback and legacy callback setters pass through intact', async () => {
   let called = false;
   const legacy = { type: 'offer', sdp: SDP };
   assert.equal(pc.setRemoteDescription(legacy, () => { called = true; }), undefined);
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(called, true);
-  assert.equal(h.nativeCalls[1][1], legacy);
+  assert.ok(!h.nativeCalls[1][1].sdp.includes('a=fingerprint:'));
+  assert.ok(h.events.some(e => e.type === 'sdp-remote' && e.accepted === true));
 });
 
 test('replacement expansion is bounded and does not break the original call', async () => {

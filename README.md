@@ -8,7 +8,7 @@ in — every engagement detail is configuration, persisted in the Burp project f
 > ICE probing, replay, flood) is gated on Burp **Target scope**. Credentials live
 > only in the Burp project file and are never masked.
 
-**Version 1.0.5** · JDK 21 · Burp Montoya API 2026.7
+**Version 1.1.0** · JDK 21 · Burp Montoya API 2026.7
 
 ## What it does
 
@@ -23,7 +23,11 @@ API-visible attack surface from inside Burp:
   with plain-English findings (weak/absent media crypto, cleartext SDES keys,
   public-IP disclosure, codec enumeration, guessable IDs, TURN relay allocation).
 - **Active modules** — SDP mutation (M3), SDP parser fuzz (M3+), DataChannel fuzz
-  (M4), authz/IDOR matrix (M5), STUN/TURN gather (M6), opt-in signaling flood (T8).
+  (M4), authz/IDOR matrix (M5), STUN/TURN gather (M6), local negotiation loop (T8).
+- **Assessment Tests** — runs automated protocol checks (STUN/TURN auth matrix,
+  peer SSRF/forwarding, relay data paths) and multi-identity HTTP/WebSocket
+  signaling scenarios via a bundled Python runner (`protocol_runner.py`), backed by
+  an 83-item methodology registry.
 - **External Tests** — generates ready-to-copy Linux/Bash commands for ten
   external RTC tools (text only; it never executes them).
 - **TLS Tests** — runs a bundled Python scanner from Burp for HTTPS/WSS and
@@ -34,19 +38,32 @@ API-visible attack surface from inside Burp:
   external/manual coverage stay separate from actual execution results.
   CSV and credentials remain intact.
 
-Version **1.0.5** explicitly tracks every requested methodology item, including
-WebSocket/TURN/SRTP authentication, TLS and cipher checks, DTLS certificates,
-TURN abuse, RTP injection/bleed/flood/fuzzing, codec fuzzing/enumeration,
-signaling/API resilience, SIP-over-WebSocket, injection and API security.
-Each checklist item includes its coverage limit and links to details and a next
-step. Run All uses the same checklist. This does **not** add raw-packet testing:
-SRTP authentication, RTP attacks, native decoder fuzzing, automated WebSocket/SIP
-authentication and server load tests still need external/manual execution.
-See the [coverage matrix](DOCS.md#105-additions--methodology-checklist-and-coverage-corrections).
+### 1.1.0 additions — executable assessment suite, managed protocol runner & methodology corrections
 
-M3+ now samples mutation families so long SDP does not crowd out codec cases;
-M5 rechecks injection, host allow-list and Burp scope before every replay.
-Reload the extension **and browser page** after upgrading.
+Version **1.1.0** delivers Slice 1 and Slice 2 of the comprehensive testing backlog:
+- **Assessment tests tab & shared test registry**: 83 methodology checks (`catalog.json`)
+  with stable IDs, execution modes, preconditions, and evidence contracts.
+- **Managed protocol runner (`runner/protocol_runner.py`)**: runs STUN/TURN listener
+  inventory (TRN-01), automated authentication matrix with `MESSAGE-INTEGRITY` (TRN-02),
+  peer ACL/SSRF forwarding with synthetic markers (TRN-04), relay data paths
+  (Send/Data vs ChannelBind/ChannelData) (TRN-05), and allocation refresh/release (TRN-07).
+  Every network leg is gated through parent scope grants (`NetworkAuthorization`).
+- **Stateful WebSocket & HTTP scenario harness (SIG-01–06, FND-04)**: records and
+  executes multi-identity signaling scenarios with Origin checks, CSRF/CSWSH testing,
+  cross-tenant identifier substitution, and assertions on protected response effects.
+- **Native WebSocket capture & RTC decoding (`RtcCapture`)**: registers Montoya
+  WebSocket handlers to capture messages, decoding Socket.IO envelopes, nested JSON,
+  escaped SDP, and trickle ICE candidates with full provenance.
+- **Methodology analysis corrections (COR-01–06)**:
+  - COR-01: Distinguishes relay infrastructure from client IP addresses; evaluates per-peer policies.
+  - COR-02: Flags ICE credential reuse only during actual deliberate restarts (`iceRestart`).
+  - COR-03: Binds DTLS certificates to the exact session, role, transport, generation, and MIDs.
+  - COR-04: Applies RFC 9143 BUNDLE and media-section SDP semantics.
+  - COR-05: Corrects crypto verdicts; treats self-signed DTLS certs as normal and SDES as a review item.
+  - COR-06: Renames T8 to "Local negotiation loop (T8)" to accurately reflect local browser execution.
+- **Extension & runner self-protection (LAB-05)**: per-frame session tokens, Host/Origin
+  validation, request smuggling prevention, bounded JSON parser depth, and formula-safe CSV export.
+- **Auto-save**: configuration edits persist automatically with debounce.
 
 Version 1.0.2 adds **Run on next DataChannel open** in M4: arm one test using the
 current payload settings, then start a call. The browser requests the run from

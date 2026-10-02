@@ -2,6 +2,7 @@ package webrtc.config
 
 import kotlinx.serialization.Serializable
 import webrtc.tls.TlsScanConfig
+import webrtc.protocol.ProtocolScanConfig
 
 /**
  * One named identity = an arbitrary set of request headers (cookies/tokens/auth)
@@ -12,7 +13,10 @@ import webrtc.tls.TlsScanConfig
 data class IdentityProfile(
     val name: String,
     val headers: Map<String, String> = emptyMap(),
-    val identifiers: Map<String, String> = emptyMap()
+    val identifiers: Map<String, String> = emptyMap(),
+    val queryTokens: Map<String, String> = emptyMap(),
+    val bodyTokens: Map<String, String> = emptyMap(),
+    val origins: List<String> = emptyList()
 )
 
 /**
@@ -36,5 +40,8 @@ data class WebRtcConfig(
     var iceProbe: IceProbeConfig = IceProbeConfig(),
     var sdpFuzz: SdpFuzzConfig = SdpFuzzConfig(),
     var signalingFlood: SignalingFloodConfig = SignalingFloodConfig(),
-    var tlsScan: TlsScanConfig = TlsScanConfig()
+    var tlsScan: TlsScanConfig = TlsScanConfig(),
+    var scanPlan: ScanPlan = ScanPlan(),
+    var protocolScan: ProtocolScanConfig = ProtocolScanConfig(),
+    var assessment: webrtc.assessment.AssessmentConfig = webrtc.assessment.AssessmentConfig()
 )

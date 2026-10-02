@@ -6,6 +6,7 @@ import webrtc.config.Detectors
 import webrtc.config.IpAddresses
 import webrtc.config.WebRtcConfig
 import webrtc.telemetry.StatsSnapshot
+import webrtc.telemetry.EvidenceAnalysis
 import webrtc.telemetry.CertificateAnalyzer
 import webrtc.telemetry.TelemetryEvent
 import webrtc.workflow.SignalingMetadata
@@ -91,8 +92,8 @@ object SecurityTestReport {
                 "${source(event)}: ${event.type}; codecs=${Detectors.enumerateCodecs(sdp).joinToString(", ").ifEmpty { "not captured" }}. " +
                     audits.joinToString(" ") { it.text }.ifEmpty { "No attribute issue identified in the captured description; this is a passive review." }, listOf(event))
             val hasRtp = Regex("(?m)^m=(audio|video)\\s").containsMatchIn(sdp)
-            if (hasRtp) add(SecurityArea.MEDIA, "SDP media keying", if (Detectors.usesSdesKeys(sdp)) Status.FINDING else Status.OBSERVED,
-                "${source(event)}: ${if (Detectors.usesSdesKeys(sdp)) "SDES a=crypto keys carried in signaling" else "No SDES a=crypto keys in this description"}. This does not prove negotiated SRTP or SRTCP protection.", listOf(event), checks = setOf(CoverageCheck.SRTP_SECURITY))
+            if (hasRtp) add(SecurityArea.MEDIA, "SDP media keying", if (Detectors.usesSdesKeys(sdp)) Status.REVIEW else Status.OBSERVED,
+                "${source(event)}: ${if (Detectors.usesSdesKeys(sdp)) "SDES a=crypto keys available to signaling participants; HTTPS may protect them in transit" else "No SDES a=crypto keys in this description"}. This does not prove negotiated SRTP or SRTCP protection.", listOf(event), checks = setOf(CoverageCheck.SRTP_SECURITY))
             if (hasRtp || sdp.contains("m=application")) add(SecurityArea.DTLS, "Advertised fingerprint / DTLS setup", if (!Detectors.hasDtlsFingerprint(sdp)) Status.REVIEW else Status.OBSERVED,
                 "${source(event)}: fingerprint present=${Detectors.hasDtlsFingerprint(sdp)}; setup=${Detectors.setupRoles(sdp).joinToString(", ").ifEmpty { "not captured" }}. Advertisement is separate from handshake validation.", listOf(event))
             val creds = Detectors.iceCredentials(sdp)
@@ -149,15 +150,12 @@ object SecurityTestReport {
         unsupported(SecurityArea.NAT, "TURN relay destination restrictions / tunneling", "Arbitrary-destination relay, C2 tunneling and server-side credential policy are not tested by ICE gathering.")
 
         val candidates = events.filter { it.type == "ice" }
-        candidates.forEach { event ->
-            val candidate = objectOf(event).str("candidate")?.let(Detectors::parseCandidate)
-            val addresses = candidate?.let { listOfNotNull(it.address, it.relatedAddress) }.orEmpty()
-            add(SecurityArea.ICE, "Application candidate harvesting / IP disclosure", when {
-                candidate == null -> Status.PARTIAL
-                addresses.any(Detectors::isPublicAddress) -> Status.FINDING
-                addresses.any(IpAddresses::isPrivate) -> Status.REVIEW
-                else -> Status.OBSERVED
-            }, "${source(event)}: ${objectOf(event).str("candidate") ?: detail(event)}. ${if (addresses.any(Detectors::isMdns)) "mDNS conceals the underlying IP." else "Assess disclosed addresses against application privacy requirements."} Probe candidates are reported separately under STUN/TURN.", listOf(event), checks = setOf(CoverageCheck.ICE_PRIVACY))
+        EvidenceAnalysis.privacy(events).forEach { review ->
+            add(SecurityArea.ICE, "Application candidate privacy review", if (review.policyMismatch) Status.REVIEW else Status.OBSERVED,
+                review.text, listOf(review.event), checks = setOf(CoverageCheck.ICE_PRIVACY))
+        }
+        EvidenceAnalysis.restartIssues(events).forEach { issue ->
+            add(SecurityArea.ICE, "Deliberate ICE restart", Status.REVIEW, issue, checks = setOf(CoverageCheck.ICE_CREDS))
         }
         absent(SecurityArea.ICE, "Application candidate harvesting / IP disclosure", candidates.isNotEmpty(), "No application ICE candidate captured; missing candidates do not establish privacy protection.")
         events.filter { it.type in setOf("selected-pair", "pc-state") }.forEach { event ->
@@ -198,11 +196,11 @@ object SecurityTestReport {
             val obj = objectOf(event)
             val role = obj.str("role").orEmpty()
             val certificate = CertificateAnalyzer.parse(role, obj.str("algorithm").orEmpty(), obj.str("fingerprint").orEmpty(), obj.str("base64").orEmpty())
-            val descriptions = sdpEvents.filter { it.frame == event.frame && it.pcId == event.pcId && objectOf(it).str("agent") == obj.str("agent") &&
-                it.type == when (role) { "local" -> "sdp-local"; "remote" -> "sdp-remote"; else -> "" } }
-            val fingerprints = CertificateAnalyzer.sdpFingerprints(descriptions.mapNotNull { objectOf(it).str("sdp") })
+            val binding = EvidenceAnalysis.binding(event, events)
+            val descriptions = binding.descriptions
+            val fingerprints = binding.fingerprints
             val issues = CertificateAnalyzer.analyze(listOf(certificate), fingerprints)
-            val bindingUnknown = certificate.parseError == null && fingerprints.none { it.first in setOf("sha-256", "sha256") }
+            val bindingUnknown = fingerprints.isEmpty() || issues.any { it.first.contains("binding is unknown") }
             add(SecurityArea.DTLS, "DTLS certificate validity / key / fingerprint review", when {
                 certificate.parseError != null -> Status.ERROR
                 issues.any { it.second } -> Status.FINDING
@@ -210,7 +208,7 @@ object SecurityTestReport {
                 issues.isNotEmpty() -> Status.REVIEW
                 else -> Status.OBSERVED
             }, "${source(event)}: role=$role; algorithm=${obj.str("algorithm")}; fingerprint=${obj.str("fingerprint")}; key=${certificate.keyAlgorithm}/${certificate.keySize}; expires=${certificate.notAfter}. " +
-                issues.joinToString(" ") { it.first } + if (bindingUnknown) " No matching peer/direction SHA-256 description captured; binding is unknown." else " Review uses captured descriptions from this peer/direction; it does not prove remote handshake rejection.", listOf(event) + descriptions, checks = setOf(CoverageCheck.DTLS_CERT))
+                issues.joinToString(" ") { it.first } + if (bindingUnknown) " No matching peer/role/generation/transport description captured; binding is unknown." else " Review uses captured descriptions from this peer/direction; it does not prove remote handshake rejection.", listOf(event) + descriptions, checks = setOf(CoverageCheck.DTLS_CERT))
         }
         absent(SecurityArea.DTLS, "DTLS certificate capture", certificates.isNotEmpty(), "No DTLS certificate captured.")
         unsupported(SecurityArea.DTLS, "Raw DTLS handshake / malicious peer testing", "Raw UDP handshake, replay, downgrade/race and server fingerprint enforcement are not tested by the TCP TLS runner or local SDP parser.")

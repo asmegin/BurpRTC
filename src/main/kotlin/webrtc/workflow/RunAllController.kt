@@ -12,6 +12,7 @@ import webrtc.config.Detectors
 import webrtc.config.IdentityProfile
 import webrtc.config.IpAddresses
 import webrtc.internals.InternalsComparator
+import webrtc.telemetry.EvidenceAnalysis
 import webrtc.telemetry.CertificateAnalyzer
 import webrtc.telemetry.StatsSnapshot
 import webrtc.telemetry.TelemetryEvent
@@ -39,7 +40,8 @@ class RunAllController(
     private val telemetry: TelemetryTableModel,
     private val tlsRunner: TlsScanRunner? = null,
     private val authzResults: () -> List<AuthzResult> = { emptyList() },
-    private val signalingEndpoints: () -> List<SignalingMetadata.Endpoint> = { emptyList() }
+    private val signalingEndpoints: () -> List<SignalingMetadata.Endpoint> = { emptyList() },
+    private val assessments: webrtc.assessment.AssessmentController? = null
 ) {
     /** One line of the run report, tagged so the UI can format it. */
     enum class Level { HEAD, OK, INFO, WARN, FINDING, FAIL, SKIP }
@@ -51,7 +53,7 @@ class RunAllController(
     /** Already-captured metadata for the report; never queues a request. */
     fun observedSignalingEndpoints(): List<SignalingMetadata.Endpoint> = runCatching { signalingEndpoints() }.getOrDefault(emptyList())
 
-    fun requestStop() { cancelled = true; tlsRunner?.stop() }
+    fun requestStop() { cancelled = true; tlsRunner?.stop(); assessments?.stop(); controller.cancelAll() }
     fun reset() { cancelled = false }
 
     /** Runs the whole sequence, emitting report lines through [emit]. Call off the EDT. */
@@ -159,6 +161,7 @@ class RunAllController(
         reviewIdentifiers(emit)
 
         emit(Line(Level.HEAD, "Security checklist coverage"))
+        if (!cancelled) assessments?.run { emit(Line(Level.INFO, it)) }
         val sections = SecurityTestReport.sections(cfg, telemetry.snapshot(), authzResults(), observedSignalingEndpoints())
         SecurityTestReport.checklist(sections).forEach { summary ->
             val level = when {
@@ -272,7 +275,7 @@ class RunAllController(
         val sdpTexts = events.filter { it.type == "sdp-local" || it.type == "sdp-remote" }
             .mapNotNull { field(it, "sdp") }
         if (sdpTexts.any { Detectors.usesSdesKeys(it) })
-            emit(Line(Level.FINDING, "SDES key exchange (a=crypto) seen in SDP — media keys are carried in cleartext signaling; DTLS-SRTP should be used instead."))
+            emit(Line(Level.WARN, "SDES key exchange (a=crypto) seen in SDP — media keys are carried in cleartext signaling; DTLS-SRTP should be used instead."))
         if (sdpTexts.any { Detectors.hasMedia(it) && !Detectors.hasDtlsFingerprint(it) })
             emit(Line(Level.WARN, "An SDP with media had no DTLS a=fingerprint — check that DTLS-SRTP is actually in use."))
         val codecs = sdpTexts.flatMap { Detectors.enumerateCodecs(it) }.distinct()
@@ -397,35 +400,9 @@ class RunAllController(
     }
 
     private fun reviewPrivacy(events: List<TelemetryEvent>, emit: (Line) -> Unit) {
-        val candidates = events.filter { it.type == "ice" }.mapNotNull { field(it, "candidate") }
-            .mapNotNull { Detectors.parseCandidate(it) }
-        if (candidates.isEmpty()) return
-
-        val addresses = candidates.flatMap { listOfNotNull(it.address, it.relatedAddress) }
-        val privateAddresses = addresses.filter { IpAddresses.isPrivate(it) }.toSortedSet()
-        val publicAddresses = addresses.filter { Detectors.isPublicAddress(it) }.toSortedSet()
-        val ipv6 = candidates.map { it.address }.filter { Detectors.isIpv6(it) }.toSortedSet()
-        val tcp = candidates.filter { it.protocol == "tcp" }.map { "${it.address}:${it.port ?: "?"}" }.toSortedSet()
-        val mdns = addresses.filter { Detectors.isMdns(it) }.toSortedSet()
-        val relayPolicy = events.filter { it.type == "pc-new" }
-            .any { field(it, "detail")?.contains("\"iceTransportPolicy\":\"relay\"") == true }
-
-        if (publicAddresses.isNotEmpty())
-            emit(Line(Level.FINDING, "Public IP address(es) appeared in application ICE candidates: ${publicAddresses.joinToString(", ")}. The host's public address was disclosed to the signaling path and/or remote peer (RFC 8828)."))
-        if (privateAddresses.isNotEmpty())
-            emit(Line(Level.WARN, "Application ICE exposed ${privateAddresses.size} distinct private IP address(es): ${privateAddresses.joinToString(", ")}. Assess against the application's privacy requirements; probes and import records are excluded."))
-        if (publicAddresses.isEmpty() && privateAddresses.isEmpty() && mdns.isEmpty())
-            emit(Line(Level.OK, "No host/private IP address was exposed in application ICE candidates."))
-        if (ipv6.isNotEmpty())
-            emit(Line(Level.INFO, "IPv6 candidate address(es) observed: ${ipv6.joinToString(", ")}."))
-        if (tcp.isNotEmpty())
-            emit(Line(Level.INFO, "TCP ICE candidate(s) observed: ${tcp.joinToString(", ")}. TCP candidates can traverse network filters that only block UDP."))
-        if (mdns.isNotEmpty())
-            emit(Line(Level.INFO, "Application ICE used ${mdns.size} distinct mDNS hostname(s), concealing the underlying IP address. This is not evidence of private-IP disclosure."))
-        if (relayPolicy)
-            emit(Line(Level.OK, "iceTransportPolicy=relay was observed: host/srflx addresses are not exposed to the application."))
-        else if (publicAddresses.isNotEmpty() || privateAddresses.isNotEmpty())
-            emit(Line(Level.WARN, "No relay-only (iceTransportPolicy=relay) configuration was observed; host/srflx exposure relies on the application choosing not to disclose it."))
+        EvidenceAnalysis.privacy(events).forEach {
+            emit(Line(if (it.policyMismatch) Level.WARN else Level.INFO, it.text))
+        }
     }
 
     /**
@@ -463,23 +440,14 @@ class RunAllController(
             }
         }
 
-        val certificateEvents = events.filter { it.type == "dtls-cert" }.distinctBy { field(it, "fingerprint") }
-        if (certificateEvents.isNotEmpty()) {
-            val parsed = certificateEvents.map { ev ->
-                CertificateAnalyzer.parse(
-                    role = field(ev, "role").orEmpty(),
-                    algorithm = field(ev, "algorithm").orEmpty(),
-                    fingerprint = field(ev, "fingerprint").orEmpty(),
-                    base64Der = field(ev, "base64").orEmpty()
-                )
-            }
-            val fingerprints = CertificateAnalyzer.sdpFingerprints(sdpTexts)
-            val results = CertificateAnalyzer.analyze(parsed, fingerprints)
-            if (results.isEmpty())
-                emit(Line(Level.OK, "DTLS certificate(s) match the SDP a=fingerprint and no validity or key-strength issue was found."))
-            else results.forEach { (text, finding) ->
-                emit(Line(if (finding) Level.FINDING else Level.WARN, text))
-            }
+        events.filter { it.type == "dtls-cert" }.forEach { ev ->
+            val cert = CertificateAnalyzer.parse(field(ev, "role").orEmpty(), field(ev, "algorithm").orEmpty(),
+                field(ev, "fingerprint").orEmpty(), field(ev, "base64").orEmpty())
+            val binding = EvidenceAnalysis.binding(ev, events)
+            val results = CertificateAnalyzer.analyze(listOf(cert), binding.fingerprints)
+            if (results.isEmpty()) emit(Line(Level.INFO, "${ev.frame} ${ev.pcId}: certificate binding observed. ${binding.limitation}"))
+            else results.forEach { (text, finding) -> emit(Line(if (finding) Level.FINDING else Level.WARN,
+                "${ev.frame} ${ev.pcId}: $text ${binding.limitation}")) }
         }
     }
 
@@ -491,7 +459,7 @@ class RunAllController(
             emit(Line(if (finding.finding) Level.FINDING else Level.WARN, "SDP attribute review: ${finding.text}"))
         }
 
-        val details = sdpTexts.flatMap { Detectors.codecDetails(it) }.distinctBy { it.payloadType to it.name }
+        val details = sdpTexts.flatMap { Detectors.codecDetails(it) }.distinct()
         val fmtp = details.filter { it.fmtp != null }
         if (fmtp.isNotEmpty())
             emit(Line(Level.INFO, "Codec parameters: " + fmtp.joinToString("; ") { "pt ${it.payloadType} ${it.name} fmtp=${it.fmtp}" }))
@@ -502,14 +470,7 @@ class RunAllController(
         credentials.mapNotNull { Detectors.auditIceCredential(it) }.distinct()
             .forEach { emit(Line(Level.WARN, "ICE credential hygiene (SDP): $it Credentials are preserved in full; this is separate from TURN account credentials.")) }
 
-        val offersByPeer = events.filter { it.type == "sdp-local" && field(it, "kind") == "offer" }
-            .groupBy { listOf(field(it, "agent"), it.frame, it.pcId) }
-        offersByPeer.values.forEach { offers ->
-            val sets = offers.sortedBy { it.seq }.mapNotNull { event ->
-                field(event, "sdp")?.let { Detectors.iceCredentials(it) }?.takeIf { it.isNotEmpty() }
-            }
-            Detectors.iceCredentialReuse(sets)?.let { emit(Line(Level.WARN, "ICE credential hygiene (SDP): $it")) }
-        }
+        EvidenceAnalysis.restartIssues(events).forEach { emit(Line(Level.WARN, it)) }
     }
 
     /**

@@ -72,17 +72,22 @@ object Detectors {
             ?.takeUnless { it in setOf("?", "unknown", "undefined", "null") }
 
     /** True if the SDP offers SDES (`a=crypto:`), i.e. media keys carried in cleartext SDP. */
-    fun usesSdesKeys(sdp: String): Boolean = sdesRegex.containsMatchIn(sdp)
+    fun usesSdesKeys(sdp: String): Boolean = SdpDocument.parse(sdp).let { doc ->
+        doc.media.filter(doc::active).any { it.rtp && doc.values(it, "crypto").isNotEmpty() }
+    }
 
     /** True if the SDP carries a DTLS `a=fingerprint`, the WebRTC-mandated key-exchange binding. */
-    fun hasDtlsFingerprint(sdp: String): Boolean = fingerprintRegex.containsMatchIn(sdp)
+    fun hasDtlsFingerprint(sdp: String): Boolean = SdpDocument.parse(sdp).let { doc ->
+        val active = doc.media.filter(doc::active)
+        active.isNotEmpty() && active.all { doc.transportValues(it, "fingerprint").isNotEmpty() }
+    }
 
     /** True if the SDP declares at least one media section. */
-    fun hasMedia(sdp: String): Boolean = mediaRegex.containsMatchIn(sdp)
+    fun hasMedia(sdp: String): Boolean = SdpDocument.parse(sdp).let { it.media.any(it::active) }
 
     /** Distinct codec names advertised in the SDP, e.g. ["opus", "VP8", "H264"]. */
     fun enumerateCodecs(sdp: String): List<String> =
-        rtpmapRegex.findAll(sdp).map { it.groupValues[1] }.distinct().toList()
+        codecDetails(sdp).map { it.name }.distinct()
 
     // ---- ICE candidate parsing + IP privacy (T3) ------------------------
 
@@ -107,7 +112,7 @@ object Detectors {
 
     /** Parses a candidate string; returns null when it is not a candidate line. */
     fun parseCandidate(line: String): Candidate? {
-        val match = candidateLineRegex.find(line.trim()) ?: return null
+        val match = candidateLineRegex.find(line.trim().removePrefix("a=")) ?: return null
         return Candidate(
             foundation = match.groupValues[1],
             component = match.groupValues[2].toIntOrNull() ?: 0,
@@ -144,13 +149,8 @@ object Detectors {
     /** ICE user-fragment / password pairs declared in an SDP (`a=ice-ufrag`/`a=ice-pwd`). */
     data class IceCredential(val ufrag: String, val password: String)
 
-    private val iceCredentialRegex = Regex("""a=ice-ufrag:(\S+)[\s\S]{0,16}?a=ice-pwd:(\S+)""")
-
     fun iceCredentials(sdp: String): List<IceCredential> =
-        iceCredentialRegex.findAll(sdp)
-            .map { IceCredential(it.groupValues[1], it.groupValues[2]) }
-            .distinct()
-            .toList()
+        SdpDocument.parse(sdp).credentials().values.distinct()
 
     /**
      * RFC 8445 requires a ufrag of at least 4 and a password of at least 22
@@ -162,18 +162,19 @@ object Detectors {
         val password = credential.password
         if (ufrag.length < 4) return "ICE ufrag '$ufrag' is shorter than the 4-character minimum (RFC 8445)."
         if (password.length < 22) return "ICE password is ${password.length} characters; RFC 8445 requires at least 22."
-        if (ufrag.toSet().size == 1) return "ICE ufrag '$ufrag' is a single repeated character — low entropy."
-        if (password.toSet().size <= 3) return "ICE password has only ${password.toSet().size} distinct characters — low entropy."
+        if (ufrag.toSet().size == 1) return "ICE ufrag '$ufrag' is a single repeated character; diversity heuristic only, not measured entropy."
+        if (password.toSet().size <= 3) return "ICE password has only ${password.toSet().size} distinct characters; diversity heuristic only, not measured entropy."
         return null
     }
 
     /** Distinct credential pairs across successive offers; fewer pairs than offers means reuse. */
-    fun iceCredentialReuse(credentialSets: List<List<IceCredential>>): String? {
+    fun iceCredentialReuse(credentialSets: List<List<IceCredential>>, deliberateRestart: Boolean = false): String? {
+        if (!deliberateRestart) return null
         if (credentialSets.size < 2) return null
         val distinct = credentialSets.flatten().distinct().size
         if (distinct == 0) return null
-        if (distinct < credentialSets.size)
-            return "ICE credentials were reused across ${credentialSets.size} negotiated offers ($distinct distinct pair(s)); an ICE restart should rotate them."
+        if (credentialSets.zipWithNext().any { (before, after) -> before.any { a -> after.any { b -> a.ufrag == b.ufrag || a.password == b.password } } })
+            return "ICE ufrag or password was reused after a deliberate ICE restart; both must rotate."
         return null
     }
 
@@ -184,7 +185,8 @@ object Detectors {
         val name: String,
         val clockRate: String,
         val channels: String?,
-        val fmtp: String?
+        val fmtp: String?,
+        val mid: String = ""
     )
 
     private val rtpmapFullRegex = Regex("""(?im)^a=rtpmap:(\d+)\s+([A-Za-z0-9._-]+)/(\d+)(?:/(\d+))?""")
@@ -199,17 +201,20 @@ object Detectors {
 
     /** Codecs advertised in SDP with their clock rate, channels and `a=fmtp` line. */
     fun codecDetails(sdp: String): List<CodecDetail> {
-        val fmtp = fmtpRegex.findAll(sdp).associate { it.groupValues[1] to it.groupValues[2].trim() }
-        return rtpmapFullRegex.findAll(sdp).map { match ->
+        val doc = SdpDocument.parse(sdp)
+        return doc.media.filter { doc.active(it) && it.rtp }.flatMap { media ->
+        val text = media.lines.joinToString("\n")
+        val fmtp = fmtpRegex.findAll(text).associate { it.groupValues[1] to it.groupValues[2].trim() }
+        rtpmapFullRegex.findAll(text).filter { it.groupValues[1] in media.formats }.map { match ->
             val pt = match.groupValues[1]
             CodecDetail(
                 payloadType = pt,
                 name = match.groupValues[2],
                 clockRate = match.groupValues[3],
                 channels = match.groupValues[4].ifBlank { null },
-                fmtp = fmtp[pt]
+                fmtp = fmtp[pt], mid = media.mid
             )
-        }.distinct().toList()
+        }.toList() }.distinct()
     }
 
     /** Distinct `a=` attribute names in SDP, e.g. ["fingerprint", "setup", "rtcp-mux"]. */
@@ -218,10 +223,7 @@ object Detectors {
 
     /** Media sections (audio/video) that do not declare `a=rtcp-mux`. */
     fun mediaSectionsWithoutRtcpMux(sdp: String): Int =
-        mediaSections(sdp).count { section ->
-            (section.startsWith("m=audio") || section.startsWith("m=video")) &&
-                !section.lineSequence().any { it.trim() == "a=rtcp-mux" }
-        }
+        SdpDocument.parse(sdp).let { doc -> doc.media.count { doc.active(it) && it.rtp && doc.values(it, "rtcp-mux").isEmpty() } }
 
     private fun mediaSections(sdp: String): List<String> {
         val sections = mutableListOf<StringBuilder>()
@@ -241,7 +243,13 @@ object Detectors {
      */
     fun auditSdpAttributes(sdp: String): List<SdpFinding> {
         val out = mutableListOf<SdpFinding>()
-        fingerprintHashRegex.findAll(sdp).map { it.groupValues[1].lowercase() }.distinct().forEach { algorithm ->
+        val doc = SdpDocument.parse(sdp)
+        doc.media.filter(doc::active).forEach { media ->
+            if (doc.transportValues(media, "fingerprint").isEmpty() && media.protocol.contains("TLS", true))
+                out += SdpFinding("Active MID ${media.mid} has no DTLS fingerprint binding.", false)
+        }
+        doc.media.filter(doc::active).flatMap { doc.transportValues(it, "fingerprint") }
+            .map { it.substringBefore(' ').lowercase() }.distinct().forEach { algorithm ->
             if (algorithm in setOf("md5", "sha-1", "sha1"))
                 out += SdpFinding(
                     "Weak DTLS fingerprint hash '$algorithm' in SDP; sha-256 binds the certificate more strongly (RFC 8827).",
@@ -249,7 +257,7 @@ object Detectors {
                 )
         }
         if (iceLiteRegex.containsMatchIn(sdp))
-            out += SdpFinding("SDP advertises a=ice-lite: this peer will not gather its own candidates or initiate connectivity checks.", false)
+            out += SdpFinding("SDP advertises a=ice-lite: a supported server role that responds to connectivity checks; this is not a vulnerability.", false)
         val missingMux = mediaSectionsWithoutRtcpMux(sdp)
         if (missingMux > 0)
             out += SdpFinding("$missingMux audio/video section(s) do not advertise a=rtcp-mux; RTCP may use a separate transport.", false)

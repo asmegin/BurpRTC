@@ -19,6 +19,8 @@ data class TelemetryEvent(
 /** Known agent event types (informational; the table accepts any type string). */
 object EventTypes {
     val KNOWN = listOf(
+        "assessment-result", "signaling-observation", "ws-connection", "ws-binary", "ws-closed", "original-policy",
+        "pc-config", "pc-operation", "ice-input", "getUserMedia-result", "browser-capabilities", "capture-result", "track-state",
         "installed", "pc-new", "pc-state", "ice", "crypto", "selected-pair",
         "sdp-local", "sdp-remote", "dc-created", "dc-send", "dc-recv",
         "getUserMedia", "fuzz-result", "fuzz-error", "sdp-mutation", "sdp-result", "sdp-error", "sdp-mutation-status",

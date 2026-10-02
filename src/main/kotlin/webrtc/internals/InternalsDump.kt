@@ -118,7 +118,9 @@ data class InternalsDump(
 
             // A whole SDP block (offer/answer).
             if (trimmed.contains("v=0") && trimmed.contains("m=")) b.sdpBlocks++
-            if (trimmed.contains("a=rtpmap:")) b.codecs += Detectors.enumerateCodecs(trimmed)
+            // Plain-text internals exports may contain isolated rtpmap lines without m-sections.
+            if (trimmed.contains("a=rtpmap:")) b.codecs += Regex("a=rtpmap:[0-9]+\\s+([A-Za-z0-9._-]+)/[0-9]+")
+                .findAll(trimmed).map { it.groupValues[1] }.toList()
 
             // A stats "codec" / "mimeType" field, e.g. "VP8" or "audio/opus".
             if (key != null && (key.contains("codec", true) || key.equals("mimeType", true)) && trimmed.length <= 64) {

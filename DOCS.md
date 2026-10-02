@@ -13,11 +13,45 @@ configuration (Module 0), persisted in the Burp project file.
 
 ## Current status (2026-10-02)
 
-**Version 1.0.5.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.0.5** and the Python TLS adapter. Validation commands are listed under Build;
-JVM, agent and Python regressions cover the checklist and execution boundaries.
-Validated: **116 JVM tests passed**, one opt-in TLS integration test skipped;
-**36 agent tests** and **5 Python tests** passed. The fat JAR builds successfully.
+**Version 1.1.0.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
+**1.1.0**, the Python TLS adapter, and the managed protocol runner. Validation
+commands are listed under Build; JVM, agent and Python regressions cover the
+backlog requirements and execution boundaries.
+Validated: **126 JVM tests passed**, one opt-in TLS integration test skipped;
+**36 agent tests** and **11 Python tests** passed. The fat JAR builds successfully.
+
+### 1.1.0 additions — executable assessment suite, managed protocol runner & methodology corrections
+
+**Assessment Tests tab**: backed by a shared 83-test executable registry (`catalog.json` /
+`TestRegistry`), covering the comprehensive testing backlog.
+- **Managed protocol runner (`runner/protocol_runner.py` / `ProtocolRunner.kt`)**: runs
+  dependency-free protocol checks via JSON-lines IPC with hard budgets and cancellation.
+  - TRN-01: STUN binding, software, realm, and alternate server inventory.
+  - TRN-02: Automated TURN authentication matrix with challenge handling and `MESSAGE-INTEGRITY`.
+  - TRN-04: Peer ACL/SSRF destination checking with synthetic echo markers.
+  - TRN-05: Multi-path relay testing (Send/Data indications vs ChannelBind/ChannelData).
+  - TRN-07: Allocation refresh and explicit zero-lifetime release.
+  - Every network leg is gated by duplex scope authorization (`NetworkAuthorization`).
+- **Stateful WebSocket & HTTP scenario harness (SIG-01–06, FND-04)**:
+  - Multi-identity scenario execution with Origin/CSWSH checks, cross-tenant identifier substitution,
+    and assertions on protected response data (`pointer`, `equals`, `meaning`).
+  - Positive controls and explicit cleanup steps required.
+- **Native WebSocket capture & RTC decoding (`RtcCapture`)**:
+  - Registers Montoya WebSocketCreatedHandler to capture live signaling traffic.
+  - Decodes Socket.IO envelopes, nested JSON, escaped SDP, and trickle ICE candidates with provenance.
+- **Methodology analysis corrections (COR-01–06)**:
+  - COR-01: Separates relay infrastructure from client IP addresses; evaluates per-peer privacy policy.
+  - COR-02: Flags ICE credential reuse only during actual deliberate restarts (`iceRestart`).
+  - COR-03: Binds DTLS certificates to exact peer, role, transport, generation, and MIDs.
+  - COR-04: Enforces RFC 9143 BUNDLE and per-media SDP attribute inheritance.
+  - COR-05: SDES is marked as a review item; self-signed DTLS certificates are recognized as standard WebRTC identities.
+  - COR-06: Renamed T8 to "Local negotiation loop (T8)" to accurately reflect local browser loop execution.
+- **Extension & runner self-protection (LAB-05)**:
+  - Per-frame session tokens issued by `BridgeSessions.kt` and required for bridge endpoints.
+  - Host and Origin header validation to prevent cross-site and DNS rebinding attacks.
+  - Request smuggling defenses and bounded JSON parser depth (`boundedJson`).
+  - Formula-injection-safe CSV escaping (`EvidenceFormatting.csv`) and script-safe markdown rendering without redaction.
+- **Configuration AutoSave**: edits save automatically with debounce.
 
 ### 1.0.5 additions — methodology checklist and coverage corrections
 

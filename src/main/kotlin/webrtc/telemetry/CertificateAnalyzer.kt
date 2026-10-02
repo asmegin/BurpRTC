@@ -32,7 +32,8 @@ object CertificateAnalyzer {
         val keySize: Int?,
         val selfSigned: Boolean,
         val computedFingerprint: String?,
-        val parseError: String?
+        val parseError: String?,
+        val fingerprints: Map<String, String> = emptyMap()
     )
 
     private val pemHeader = Regex("-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\\s")
@@ -65,7 +66,10 @@ object CertificateAnalyzer {
             keySize = keySize,
             selfSigned = cert.subjectX500Principal == cert.issuerX500Principal,
             computedFingerprint = sha256Fingerprint(der),
-            parseError = null
+            parseError = null,
+            fingerprints = listOf("sha-256", "sha-384", "sha-512", "sha-1").associateWith { algorithm ->
+                MessageDigest.getInstance(algorithm.uppercase()).digest(der).joinToString(":") { "%02X".format(it) }
+            }
         )
     }
 
@@ -109,16 +113,16 @@ object CertificateAnalyzer {
                 else if (Duration.between(now, notAfter) < Duration.ofDays(7))
                     out += "DTLS $label expires within 7 days ($notAfter)." to false
             }
-            // Binding: at least one SDP fingerprint must match the computed SHA-256.
-            val sha256 = fingerprints.filter { it.first in setOf("sha-256", "sha256") }.map { it.second }
-            if (cert.computedFingerprint != null && sha256.isNotEmpty()) {
-                val declared = sha256.map { normalizeFingerprint(it) }
-                if (normalizeFingerprint(cert.computedFingerprint) !in declared)
-                    out += "DTLS $label fingerprint does not match the SDP a=fingerprint — the signaling does not bind this certificate (RFC 8827)." to true
+            val supported = fingerprints.filter { (algorithm, _) ->
+                algorithm in cert.fingerprints || algorithm in setOf("sha-256", "sha256") && cert.computedFingerprint != null
             }
+            if (supported.isNotEmpty()) {
+                if (supported.any { (algorithm, value) ->
+                    normalizeFingerprint(value) != normalizeFingerprint(cert.fingerprints[algorithm] ?: cert.computedFingerprint.orEmpty())
+                })
+                    out += "DTLS $label fingerprint does not match the SDP a=fingerprint — the signaling does not bind this certificate (RFC 8827)." to true
+            } else out += "DTLS $label binding is unknown: no supported fingerprint for this session/transport was captured." to false
         }
-        if (certificates.any { it.role == "remote" } && fingerprints.none { it.first in setOf("sha-256", "sha256") })
-            out += "A DTLS certificate was observed but no SDP sha-256 a=fingerprint was captured to bind it against." to false
         return out
     }
 }

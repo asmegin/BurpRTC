@@ -25,7 +25,8 @@ import javax.swing.*
 class ConfigPanel(
     private val api: MontoyaApi,
     private val configStore: ConfigStore,
-    private val onSaved: () -> Unit
+    private val onSaved: () -> Unit,
+    private val scanControls: JComponent? = null
 ) : JPanel(BorderLayout()) {
 
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true; encodeDefaults = true }
@@ -41,6 +42,8 @@ class ConfigPanel(
     private val identitiesJson = JTextArea(10, 60)
     private val identifierKeys = JTextArea(3, 40)
     private val status = JLabel(" ")
+    private var loading = false
+    private val debounce = Timer(350) { save() }.apply { isRepeats = false }
 
     private val advancedPanel = JPanel(GridBagLayout())
     private val showAdvanced = JCheckBox("Show advanced settings (bridge address, paths, agent override)")
@@ -48,11 +51,11 @@ class ConfigPanel(
     init {
         val sections = Box.createVerticalBox()
         sections.add(buildBasicSection())
+        scanControls?.let { sections.add(it) }
         sections.add(buildAuthzSection())
         sections.add(buildAdvancedSection())
 
         val buttons = JPanel().apply {
-            add(JButton("Save").apply { addActionListener { save() } })
             add(JButton("Reload").apply { addActionListener { load() } })
             add(JButton("Check configuration").apply { addActionListener { checkConfig(showIfClean = true) } })
             add(status)
@@ -62,6 +65,13 @@ class ConfigPanel(
         add(buttons, BorderLayout.SOUTH)
 
         load()
+        listOf(hostAllowList, bridgeHost, bridgePort, collectPath, commandPath, agentJsPath, identitiesJson, identifierKeys).forEach {
+            AutoSave.watch(it) { if (!loading) { status.text = "Saving?"; debounce.restart() } }
+        }
+        listOf(injectionEnabled, stripCsp).forEach { it.addActionListener { if (!loading) { debounce.stop(); save() } } }
+        addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusLost(e: java.awt.event.FocusEvent?) { if (debounce.isRunning) { debounce.stop(); save() } }
+        })
     }
 
     // ---- sections -------------------------------------------------------
@@ -165,7 +175,7 @@ class ConfigPanel(
         row(advancedPanel, r++, "Bridge port:", bridgePort, HelpUi.button(
             "Bridge port",
             "TCP port for the local telemetry bridge. Default 8777. Change only if another program already uses 8777 on your machine.",
-            "If Burp logs a bind error on 8777, set 8788 here and Save; the bridge restarts on the new port."
+            "If Burp logs a bind error on 8777, set 8788 here; the change saves automatically and the bridge restarts on the new port."
         ))
         row(advancedPanel, r++, "Collect path:", collectPath, HelpUi.button(
             "Collect path",
@@ -211,6 +221,7 @@ class ConfigPanel(
     }
 
     private fun load() {
+        debounce.stop(); loading = true
         val cfg = configStore.config
         injectionEnabled.isSelected = cfg.injectionEnabled
         stripCsp.isSelected = cfg.stripCsp
@@ -222,34 +233,34 @@ class ConfigPanel(
         agentJsPath.text = cfg.agentJsPath
         identifierKeys.text = cfg.identifierKeys.joinToString("\n")
         identitiesJson.text = json.encodeToString(ListSerializer(IdentityProfile.serializer()), cfg.identities)
-        status.text = "loaded"
+        loading = false
+        status.text = "Changes save automatically"
     }
 
     private fun save() {
+        if (loading) return
         try {
-            val identities = if (identitiesJson.text.isBlank()) emptyList()
-            else json.decodeFromString(ListSerializer(IdentityProfile.serializer()), identitiesJson.text)
-
-            val cfg = configStore.config.copy(
-                injectionEnabled = injectionEnabled.isSelected,
-                stripCsp = stripCsp.isSelected,
+            val previous = configStore.config
+            val warnings = mutableListOf<String>()
+            val identities = runCatching {
+                if (identitiesJson.text.isBlank()) emptyList() else json.decodeFromString(ListSerializer(IdentityProfile.serializer()), identitiesJson.text)
+            }.getOrElse { warnings += "Identities JSON unfinished; keeping last valid identities"; previous.identities }
+            val port = bridgePort.text.trim().toIntOrNull()?.takeIf { it in 1..65535 }
+                ?: previous.bridgePort.also { warnings += "Invalid bridge port; keeping $it" }
+            val cfg = previous.copy(
+                injectionEnabled = injectionEnabled.isSelected, stripCsp = stripCsp.isSelected,
                 hostAllowList = lines(hostAllowList.text),
-                bridgeHost = bridgeHost.text.trim().ifBlank { "127.0.0.1" },
-                bridgePort = bridgePort.text.trim().toIntOrNull() ?: 8777,
-                collectPath = collectPath.text.trim().ifBlank { "/collect" },
-                commandPath = commandPath.text.trim().ifBlank { "/command" },
-                agentJsPath = agentJsPath.text.trim(),
-                identities = identities,
-                identifierKeys = lines(identifierKeys.text)
+                bridgeHost = bridgeHost.text.trim().ifBlank { "127.0.0.1" }, bridgePort = port,
+                collectPath = collectPath.text.trim().ifBlank { "/collect" }, commandPath = commandPath.text.trim().ifBlank { "/command" },
+                agentJsPath = agentJsPath.text.trim(), identities = identities, identifierKeys = lines(identifierKeys.text)
             )
             configStore.save(cfg)
-            onSaved()
-            status.text = "saved — bridge restarted"
-            // Non-blocking readiness check; save already succeeded.
-            checkConfig(showIfClean = false)
-        } catch (t: Throwable) {
-            api.logging().logToError("[config] save failed: ${t.message}")
-            JOptionPane.showMessageDialog(this, "Save failed: ${t.message}", "Config error", JOptionPane.ERROR_MESSAGE)
+            if (listOf(previous.bridgeHost, previous.bridgePort, previous.collectPath, previous.commandPath) !=
+                listOf(cfg.bridgeHost, cfg.bridgePort, cfg.collectPath, cfg.commandPath)) onSaved()
+            status.text = if (warnings.isEmpty()) "Saved automatically" else "Saved other settings. ${warnings.joinToString("; ")}"
+        } catch (t: Exception) {
+            api.logging().logToError("[config] autosave failed: ${t.message}")
+            status.text = "Not saved: ${t.message}"
         }
     }
 

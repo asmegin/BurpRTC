@@ -14,7 +14,7 @@
   var COLLECT = CFG.collect;
   var COMMAND = CFG.command;
   var FRAME = (function () { try { return location.href; } catch (e) { return "frame"; } })();
-  var AGENT_VERSION = "1.0.5";
+  var AGENT_VERSION = "1.1.0";
   var AGENT_ID = "agent-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   var NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   var channels = new Map();
@@ -29,6 +29,7 @@
   var latestObservedOffer = "";
   var latestObservedAnswer = "";
   var statsSamples = new WeakMap();
+  var peerMeta = new WeakMap();
   // Application peers, so a manual stats capture can find a live connection.
   var peersSeen = [];
   // Bounded automatic stats sampling: a short burst right after connect, then a
@@ -79,6 +80,7 @@
     function Wrapped(cfg, constraints) {
       var pc = new Native(cfg, constraints);
       var pcId = "pc" + (++pcSeq);
+      peerMeta.set(pc, { local: 0, remote: 0, restart: false });
       peersSeen.push({ pc: pc, pcId: pcId });
       if (peersSeen.length > 32) peersSeen.shift();
       // Preserve the full ICE configuration, including TURN usernames/credentials:
@@ -94,7 +96,7 @@
       pc.addEventListener("icecandidate", function (e) {
         if (e && e.candidate && e.candidate.candidate) {
           var cand = e.candidate.candidate;
-          beacon({ type: "ice", pc: pcId, candidate: cand, private: isPrivate(cand) });
+          beacon({ type: "ice", pc: pcId, candidate: cand, stage: "gathered", generation: peerMeta.get(pc).local, sdpMid: e.candidate.sdpMid, usernameFragment: e.candidate.usernameFragment, private: isPrivate(cand) });
         }
       });
 
@@ -139,6 +141,19 @@
         if (e && e.channel) wrapDataChannel(e.channel, pcId, "remote", pc);
       });
 
+      ["setConfiguration", "restartIce", "addTransceiver", "addTrack", "removeTrack"].forEach(function (method) {
+        var nativeMethod = pc[method];
+        if (typeof nativeMethod !== "function") return;
+        pc[method] = function () {
+          var result = nativeMethod.apply(pc, arguments);
+          if (method === "restartIce") peerMeta.get(pc).restart = true;
+          var config = method === "setConfiguration" ? (pc.getConfiguration ? pc.getConfiguration() : arguments[0]) : null;
+          if (config) recordIceServers(config);
+          beacon({ type: config ? "pc-config" : "pc-operation", pc: pcId, method: method,
+            detail: config ? safeJson(config) : method + " accepted", iceTransportPolicy: config && config.iceTransportPolicy });
+          return result;
+        };
+      });
       hookSdp(pc, pcId);
       hookCreateDataChannel(pc, pcId);
       return pc;
@@ -153,70 +168,83 @@
   }
 
   function hookSdp(pc, pcId) {
-    // Keep delayed SDP operations and trickled candidates in application call order.
-    var pending = Promise.resolve();
-    var lastLocalMutation = null;
+    var pending = Promise.resolve(), lastLocalMutation = null;
+    var nativeOffer = pc.createOffer, nativeAnswer = pc.createAnswer;
     function enqueue(action) {
       var result = pending.then(action);
       pending = result.catch(function () {});
       return result;
     }
-
-    function resultEvent(method, mutation, error) {
-      beacon({ type: error ? "sdp-error" : "sdp-result", pc: pcId,
-        mutationId: mutation ? mutation.id : "", method: method,
-        detail: method + (error ? " rejected: " + error.name + ": " + error.message : " accepted"),
-        accepted: !error });
+    function callbackResult(promise, success, failure) {
+      if (typeof success !== "function" && typeof failure !== "function") return promise;
+      promise.then(typeof success === "function" ? success : function () {}, typeof failure === "function" ? failure : function () {});
+      return undefined;
     }
-
-    function observe(method, result, mutation) {
-      return Promise.resolve(result).then(function (value) {
-        if (mutation) resultEvent(method, mutation, null);
-        return value;
-      }, function (error) {
-        resultEvent(method, mutation, error);
-        throw error;
-      });
+    function record(desc, side, accepted, restart) {
+      if (!desc || !desc.sdp) return;
+      rememberSdp(desc);
+      beacon({ type: "sdp-" + side, pc: pcId, kind: desc.type, sdp: desc.sdp,
+        generation: peerMeta.get(pc)[side] + (accepted ? 0 : 1), accepted: accepted,
+        iceRestart: !!restart, private: isPrivate(desc.sdp) });
     }
-
-    ["createOffer", "createAnswer"].forEach(function (m) {
-      var orig = pc[m];
+    ["createOffer", "createAnswer"].forEach(function (method) {
+      var orig = pc[method];
       if (typeof orig !== "function") return;
-      pc[m] = function () {
-        // Legacy callback overloads are left intact; M3 targets promise APIs.
-        if (typeof arguments[0] === "function") return orig.apply(pc, arguments);
-        var args = arguments;
-        return enqueue(function () {
-          return Promise.resolve(orig.apply(pc, args)).then(function (desc) {
-            return mutateDescription(desc, "local", m, pcId).then(function (change) {
+      pc[method] = function () {
+        var legacy = typeof arguments[0] === "function";
+        var success = legacy ? arguments[0] : null, failure = legacy ? arguments[1] : null;
+        var options = legacy ? arguments[2] : arguments[0];
+        if (method === "createOffer" && options && options.iceRestart) peerMeta.get(pc).restart = true;
+        var promise = enqueue(function () {
+          return Promise.resolve(orig.call(pc, options)).then(function (desc) {
+            return mutateDescription(desc, "local", method, pcId).then(function (change) {
               lastLocalMutation = change.id ? change : null;
-              var out = change.description;
-              if (out && out.sdp) { rememberSdp(out); beacon({ type: "sdp-local", pc: pcId, kind: out.type, sdp: out.sdp, private: isPrivate(out.sdp) }); }
-              return out;
+              record(change.description, "local", false, peerMeta.get(pc).restart);
+              return change.description;
             });
           });
         });
+        return callbackResult(promise, success, failure);
       };
     });
-    ["setLocalDescription", "setRemoteDescription", "addIceCandidate"].forEach(function (m) {
-      var orig = pc[m];
+    ["setLocalDescription", "setRemoteDescription", "addIceCandidate"].forEach(function (method) {
+      var orig = pc[method];
       if (typeof orig !== "function") return;
-      pc[m] = function () {
-        if (typeof arguments[1] === "function" || typeof arguments[2] === "function") return orig.apply(pc, arguments);
-        var args = Array.prototype.slice.call(arguments);
-        return enqueue(function () {
-          if (m !== "setRemoteDescription") {
-            var mutation = m === "setLocalDescription" && args[0] && lastLocalMutation &&
-              args[0].sdp === lastLocalMutation.description.sdp ? lastLocalMutation : null;
-            return observe(m, Promise.resolve().then(function () { return orig.apply(pc, args); }), mutation);
+      pc[method] = function () {
+        var args = Array.prototype.slice.call(arguments), success = args[1], failure = args[2];
+        var promise = enqueue(async function () {
+          var desc = args[0], change = null;
+          try {
+            if (method === "setLocalDescription" && (!desc || !desc.type)) {
+              var answer = pc.signalingState === "have-remote-offer" || pc.signalingState === "have-local-pranswer";
+              desc = await (answer ? nativeAnswer : nativeOffer).call(pc);
+              change = await mutateDescription(desc, "local", "setLocalDescription", pcId);
+              desc = change.description;
+            } else if (method === "setRemoteDescription") {
+              change = await mutateDescription(desc, "remote", method, pcId);
+              desc = change.description;
+            } else if (method === "setLocalDescription") {
+              if (lastLocalMutation && desc && desc.sdp === lastLocalMutation.description.sdp) change = lastLocalMutation;
+              else { change = await mutateDescription(desc, "local", method, pcId); desc = change.description; }
+            }
+            var value = await orig.call(pc, desc);
+            if (method === "addIceCandidate") {
+              beacon({ type: "ice-input", pc: pcId, candidate: desc && desc.candidate || "", sdpMid: desc && desc.sdpMid,
+                usernameFragment: desc && desc.usernameFragment, accepted: true, detail: "Candidate accepted locally; connectivity is not established" });
+            } else if (desc && desc.type !== "rollback") {
+              var side = method === "setLocalDescription" ? "local" : "remote", meta = peerMeta.get(pc);
+              meta[side]++;
+              record(desc, side, true, side === "local" && meta.restart);
+              if (side === "local") meta.restart = false;
+            } else beacon({ type: "pc-operation", pc: pcId, method: method, detail: "rollback accepted" });
+            if (change && change.id) beacon({ type: "sdp-result", pc: pcId, method: method, mutationId: change.id, accepted: true, detail: method + " accepted" });
+            return value;
+          } catch (error) {
+            beacon({ type: "sdp-error", pc: pcId, method: method, mutationId: change && change.id || "", accepted: false, detail: method + " rejected: " + cleanError(error) });
+            throw error;
           }
-          return mutateDescription(args[0], "remote", m, pcId).then(function (change) {
-            if (args.length) args[0] = change.description;
-            var desc = change.description;
-            if (desc && desc.sdp) { rememberSdp(desc); beacon({ type: "sdp-remote", pc: pcId, kind: desc.type, sdp: desc.sdp, private: isPrivate(desc.sdp) }); }
-            return observe(m, Promise.resolve().then(function () { return orig.apply(pc, args); }), change.id ? change : null);
-          });
         });
+        return callbackResult(promise, success, failure);
       };
     });
   }
@@ -431,23 +459,23 @@
       var previous = statsSamples.get(pc) || {};
       statsSamples.set(pc, previous);
 
-      var transport = null, certs = {}, codecs = {}, candidates = {}, selectedPair = null;
+      var transport = null, transports = [], certs = {}, codecs = {}, candidates = {}, selectedPair = null;
       stats.forEach(function (s) {
-        if (s.type === "transport" && !transport) transport = s;
+        if (s.type === "transport") { transports.push(s); if (!transport) transport = s; }
         else if (s.type === "certificate") certs[s.id] = s;
         else if (s.type === "codec") codecs[s.id] = s;
         else if (s.type === "local-candidate" || s.type === "remote-candidate") candidates[s.id] = s;
         else if (s.type === "candidate-pair" && (s.selected || s.nominated) && s.state === "succeeded") selectedPair = s;
       });
 
-      if (transport) {
+      transports.forEach(function (transport) {
         var detail = "dtls=" + (transport.dtlsCipher || "?") + " srtp=" + (transport.srtpCipher || "?") + " tls=" + (transport.tlsVersion || "?");
         var signature = detail + " state=" + (transport.dtlsState || "?");
         if (previous[transport.id] !== signature) {
           previous[transport.id] = signature;
           beacon({ type: "crypto", pc: pcId, transportId: transport.id, dtlsState: transport.dtlsState || "unknown", detail: detail });
         }
-      }
+      });
 
       var rtp = [];
       stats.forEach(function (s) {
@@ -503,20 +531,23 @@
 
       var certificates = [];
       var linked = [];
-      if (transport) {
-        if (transport.localCertificateId && certs[transport.localCertificateId]) linked.push({ role: "local", cert: certs[transport.localCertificateId] });
-        if (transport.remoteCertificateId && certs[transport.remoteCertificateId]) linked.push({ role: "remote", cert: certs[transport.remoteCertificateId] });
-      }
+      transports.forEach(function (transport) {
+        if (transport.localCertificateId && certs[transport.localCertificateId]) linked.push({ role: "local", transportId: transport.id, cert: certs[transport.localCertificateId] });
+        if (transport.remoteCertificateId && certs[transport.remoteCertificateId]) linked.push({ role: "remote", transportId: transport.id, cert: certs[transport.remoteCertificateId] });
+      });
       if (!linked.length) stats.forEach(function (s) { if (s.type === "certificate") linked.push({ role: "unknown", cert: s }); });
-      linked.slice(0, 4).forEach(function (entry) {
+      linked.slice(0, 16).forEach(function (entry) {
         var c = entry.cert;
         var base64 = typeof c.base64Certificate === "string" ? c.base64Certificate : "";
         var fingerprint = c.fingerprint || "";
         certificates.push({ role: entry.role, algorithm: c.fingerprintAlgorithm || "", fingerprint: fingerprint });
-        var signature = (c.fingerprintAlgorithm || "") + ":" + fingerprint + ":" + base64;
-        if (previous["cert-" + c.id] !== signature) {
-          previous["cert-" + c.id] = signature;
+        var generation = (peerMeta.get(pc) || {})[entry.role];
+        var certKey = "cert-" + c.id + ":" + entry.role + ":" + entry.transportId;
+        var signature = (c.fingerprintAlgorithm || "") + ":" + fingerprint + ":" + base64 + ":" + generation;
+        if (previous[certKey] !== signature) {
+          previous[certKey] = signature;
           beacon({ type: "dtls-cert", pc: pcId, role: entry.role, algorithm: c.fingerprintAlgorithm || "",
+            generation: generation, transportId: entry.transportId || "", mids: stats.filter(function (s) { return s.transportId === entry.transportId && s.mid != null; }).map(function (s) { return String(s.mid); }),
             fingerprint: fingerprint, base64: base64.slice(0, 16384), truncated: base64.length > 16384 });
         }
       });
