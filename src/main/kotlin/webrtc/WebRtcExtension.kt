@@ -11,6 +11,7 @@ import webrtc.scope.ScopeGate
 import webrtc.telemetry.TelemetryTableModel
 import webrtc.ui.AuthzContextMenu
 import webrtc.ui.SuiteTab
+import webrtc.tls.TlsScanRunner
 
 class WebRtcExtension : BurpExtension {
     override fun initialize(api: MontoyaApi) {
@@ -22,17 +23,18 @@ class WebRtcExtension : BurpExtension {
         val activeTests = ActiveTestController(configStore, scope::inScope, telemetry)
         val bridge = BridgeServer(api, configStore, telemetry, activeTests)
         val runner = AuthzMatrixRunner(api, configStore, scope)
+        val tlsRunner = TlsScanRunner(configStore, scope::inScope, telemetry)
 
         api.http().registerHttpHandler(InjectorHandler(api, configStore, scope))
 
-        val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests) { bridge.restart() }
+        val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests, tlsRunner) { tlsRunner.stop(); bridge.restart() }
         api.userInterface().registerContextMenuItemsProvider(
             AuthzContextMenu { selected -> suiteTab.runAuthz(selected) }
         )
         api.userInterface().registerSuiteTab("WebRTC", suiteTab)
 
         bridge.start()
-        api.extension().registerUnloadingHandler { bridge.stop() }
+        api.extension().registerUnloadingHandler { tlsRunner.close(); bridge.stop() }
 
         api.logging().logToOutput(BuildInfo.loadedMessage())
     }

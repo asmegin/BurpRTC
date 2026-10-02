@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "webrtc.testsuite"
-version = "1.0.1"
+version = "1.0.5"
 
 repositories {
     mavenCentral()
@@ -33,6 +33,7 @@ tasks.test {
 
 tasks.processResources {
     from("agent/webrtc-agent.js") { into("agent") }
+    from("runner/tls_runner.py") { into("runner") }
     val buildVersion = project.version.toString()
     inputs.property("version", buildVersion)
     filesMatching("webrtc-version.properties") { expand("version" to buildVersion) }

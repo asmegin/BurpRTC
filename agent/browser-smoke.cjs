@@ -15,6 +15,7 @@ async function main() {
   const profile = fs.mkdtempSync(path.join(build, 'webrtc-chromium-'));
   let rules = null;
   let job = null, permit = true, cancelAfterSend = false;
+  let autoFuzz = null;
   const events = [];
   // Minimal local STUN Binding fixture; the documentation address produces a srflx candidate.
   const stun = dgram.createSocket('udp4');
@@ -37,6 +38,14 @@ async function main() {
       res.setHeader('Cache-Control', 'no-store');
       const commands = rules ? [{ type: 'sdp-mutation', config: rules }] : [];
       if (job && query.get('poll') === '1') commands.push(job);
+      if (autoFuzz && query.has('autoFuzz')) {
+        const state = events.findLast(e => e.type === 'agent-state' && e.agent === query.get('agent') && e.frame === query.get('frame'));
+        if (state?.channels.some(c => c.channelId === query.get('autoFuzz') && c.state === 'open')) {
+          job = { id: 'auto-open-smoke', type: 'dc-fuzz', agent: state.agent, frame: state.frame,
+            channelId: query.get('autoFuzz'), config: autoFuzz };
+          autoFuzz = null; commands.push(job);
+        }
+      }
       res.end(JSON.stringify({ commands, authorized: !!job && permit && query.get('authorize') === job.id }));
     } else if (req.url === '/collect') {
       let body = '';
@@ -184,6 +193,36 @@ async function main() {
     console.log('PASS: M4 cancellation stops subsequent sends');
     cancelAfterSend = false; permit = true;
     await evaluate('smokeChannel.a.close(); smokeChannel.b.close()');
+    autoFuzz = { ...fuzzConfig, payload: 'automatic before close', count: 1 };
+    await evaluate(`(async () => {
+      const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+      window.autoSmoke = { a, b, received: [], openedAt: 0 };
+      a.onicecandidate = e => { if (e.candidate) b.addIceCandidate(e.candidate).catch(() => {}); };
+      b.onicecandidate = e => { if (e.candidate) a.addIceCandidate(e.candidate).catch(() => {}); };
+      b.ondatachannel = e => { e.channel.onmessage = message => autoSmoke.received.push({ data: message.data, elapsedMs: performance.now() - autoSmoke.openedAt }); };
+      const dc = a.createDataChannel('short-lived-auto');
+      const ready = new Promise(resolve => dc.onopen = () => {
+        autoSmoke.openedAt = performance.now();
+        setTimeout(() => { a.close(); b.close(); }, 700); resolve();
+      });
+      await a.setLocalDescription(await a.createOffer());
+      await b.setRemoteDescription(a.localDescription);
+      await b.setLocalDescription(await b.createAnswer());
+      await a.setRemoteDescription(b.localDescription); await ready;
+    })()`);
+    await evaluate('new Promise(resolve => setTimeout(resolve, 850))');
+    const automatic = await evaluate('autoSmoke.received');
+    assert.equal(automatic.length, 1); assert.equal(automatic[0].data, 'automatic before close');
+    assert.ok(automatic[0].elapsedMs < 700);
+    assert.ok(events.some(e => e.type === 'command-result' && e.commandId === 'auto-open-smoke' && e.status === 'completed'));
+    assert.ok(events.some(e => e.type === 'dc-state' && e.label === 'short-lived-auto' && e.state === 'closed' && e.everOpened));
+    job = null;
+    console.log('PASS: automatic M4 reaches the remote peer before a 700ms channel closes, without the three-second poll');
+    await evaluate('const unopened = new RTCPeerConnection(); unopened.createDataChannel("never-opened"); unopened.close()');
+    await evaluate('new Promise(resolve => setTimeout(resolve, 100))');
+    assert.ok(events.some(e => e.type === 'dc-state' && e.label === 'never-opened' && e.state === 'closed' && e.everOpened === false));
+    assert.ok(events.some(e => e.type === 'pc-state' && e.action === 'close-called' && e.stack));
+    console.log('PASS: never-opened channels and page close() calls are diagnosed');
     run = await runJob('ice-probe', { url: `stun:127.0.0.1:${stun.address().port}`, policy: 'all', timeoutSeconds: 5 });
     assert.equal(run.result.status, 'completed');
     assert.ok(events.some(e => e.type === 'ice-probe-candidate' && e.commandId === run.id && e.candidateType === 'srflx'));

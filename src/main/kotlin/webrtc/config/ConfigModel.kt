@@ -1,6 +1,7 @@
 package webrtc.config
 
 import kotlinx.serialization.Serializable
+import webrtc.tls.TlsScanConfig
 
 /**
  * One named identity = an arbitrary set of request headers (cookies/tokens/auth)
@@ -34,5 +35,6 @@ data class WebRtcConfig(
     var dataChannelFuzz: DataChannelFuzzConfig = DataChannelFuzzConfig(),
     var iceProbe: IceProbeConfig = IceProbeConfig(),
     var sdpFuzz: SdpFuzzConfig = SdpFuzzConfig(),
-    var signalingFlood: SignalingFloodConfig = SignalingFloodConfig()
+    var signalingFlood: SignalingFloodConfig = SignalingFloodConfig(),
+    var tlsScan: TlsScanConfig = TlsScanConfig()
 )

@@ -29,6 +29,37 @@ class ActiveTestController(
     private val jobs = LinkedHashMap<String, Job>()
     private val json = Json { encodeDefaults = true }
     private val activeStates = setOf("queued", "running")
+    private var nextOpenFuzz: DataChannelFuzzConfig? = null
+    private var automaticFuzzJob: String? = null
+
+    /** Session-only, one-shot arming; payload settings may be persisted, arming is never restored. */
+    @Synchronized fun armNextOpenFuzz(settings: DataChannelFuzzConfig) {
+        settings.validate()
+        require(config.config.injectionEnabled && config.config.hostAllowList.isNotEmpty()) {
+            "Enable injection and configure the host allow-list before arming"
+        }
+        nextOpenFuzz = settings
+    }
+
+    @Synchronized fun nextOpenFuzzArmed(): Boolean = nextOpenFuzz != null
+    @Synchronized fun automaticFuzzJob(): String? = automaticFuzzJob
+
+    @Synchronized fun disarmNextOpenFuzz() {
+        nextOpenFuzz = null
+        automaticFuzzJob?.let { cancelJob(it) }
+    }
+
+    /** Called by the browser's open event, after its fresh channel heartbeat. */
+    @Synchronized fun queueNextOpenFuzz(agentId: String, frame: String, channelId: String): String? {
+        val settings = nextOpenFuzz ?: return null
+        val agent = runCatching { freshAgent(agentId) }.getOrNull() ?: return null
+        if (agent.frame != frame || agent.channels.none { it.id == channelId && it.state == "open" }) return null
+        // A busy page or global job cap leaves the one-shot armed for another open event.
+        val id = runCatching { queueFuzz(agentId, channelId, settings) }.getOrNull() ?: return null
+        automaticFuzzJob = id
+        nextOpenFuzz = null
+        return id
+    }
 
     fun pageAllowed(frame: String): Boolean {
         val cfg = config.config
@@ -164,6 +195,7 @@ class ActiveTestController(
     }
 
     @Synchronized fun cancelAll() {
+        nextOpenFuzz = null
         jobs.values.filter { it.state in activeStates }.forEach { transition(it, "cancelled") }
     }
 

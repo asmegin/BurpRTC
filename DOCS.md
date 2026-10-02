@@ -11,18 +11,221 @@ configuration (Module 0), persisted in the Burp project file.
 > ICE probing, replay) is gated on Burp **Target scope**. Credentials live only
 > in the Burp project file.
 
-## Current status (2026-10-01)
+## Current status (2026-10-02)
 
-**Version 1.0.1.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.0.1**. `./gradlew shadowJar` builds successfully, the agent passes
-`node --check agent/webrtc-agent.js`, and the full suites pass: **76 JVM tests**
-(`gradlew test`) and **30 agent tests** (`node --test agent/webrtc-agent.test.cjs
-agent/active-tests.test.cjs`).
+**Version 1.0.5.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
+**1.0.5** and the Python TLS adapter. Validation commands are listed under Build;
+JVM, agent and Python regressions cover the checklist and execution boundaries.
+Validated: **116 JVM tests passed**, one opt-in TLS integration test skipped;
+**36 agent tests** and **5 Python tests** passed. The fat JAR builds successfully.
+
+### 1.0.5 additions — methodology checklist and coverage corrections
+
+**Findings (M7)** now starts with a concise point-form summary in five groups:
+Authentication, Media and RTP security tests, Resilience testing, Signaling
+protocol-specific tests, and Other security categories. It lists all 22 distinct
+requested checks (codec and RTP fuzzing also appear under resilience), plus
+transport/HSTS, ICE privacy/credentials, DataChannels, session lifecycle, browser
+permissions/origin, SFU/MCU isolation, storage/compliance and end-to-end encryption.
+The existing twelve detailed security areas and raw evidence follow.
+
+Each bullet separates **Built in / Partial coverage / External / manual** from
+recorded result states, and links to the limitation and concrete next step.
+Where evidence exists, a short observation is included; full text and credentials
+remain in the detailed tables and raw evidence. Mixed completed, error, cancelled
+and review results stay visible together. A configured target, generated command,
+baseline HTTP replay or unrelated observation never establishes test coverage.
+Run All emits the same checklist after its active checks, including M5 results.
+
+| Requested check | Implemented coverage | Remaining work / where to test |
+| --- | --- | --- |
+| Signaling authentication | M5 HTTP cross-identity and stripped-header replay | Select actual signaling requests; verify ownership, URL/body tokens and application behavior |
+| WebSocket authentication | External/manual | Burp handshake/message tests: credentials, Origin, logout/reconnect, per-message authorization |
+| TURN authentication | M6 supplied-credential allocation observation | Compare valid, missing, invalid and expired credentials manually; gathering failure alone is inconclusive |
+| SRTP authentication | External/manual | Packet harness with test keys, modified tags, replay and receiver rejection evidence |
+| TLS version security | Integrated TCP TLS Tests | Run for each selected HTTPS/WSS or TURN-over-TLS listener |
+| Cipher-Suite analysis | Integrated TCP TLS cipher enumeration | Media DTLS/SRTP are separate observations |
+| TURN relay abuse | M6 allocation precondition | External Tests: stunner / TURNado / TURNt; confirm destination restrictions and actual transfer |
+| DTLS certificates | Captured X.509 validity/key/fingerprint review | Remote handshake enforcement needs a peer harness |
+| DTLS Crypto-Suite analysis | Negotiated browser cipher/version review | Supported-suite enumeration and downgrade tests need a DTLS harness |
+| SRTP security | SDP keying and negotiated profile review | Packet authentication, SRTCP, rekey and replay tests remain external |
+| RTP injection | External/manual | Controlled media peer/packet harness with receiver evidence |
+| RTP bleed | External/manual | External Tests: SIPPTS rtpbleed against a confirmed media endpoint |
+| RTP flooding | External/manual | Bounded media load harness with loss/availability/recovery measurements |
+| RTP packet fuzzing | External/manual | Raw packet/native parser harness; preserve seeds and crash reproduction |
+| Codec fuzzing | M3+ codec SDP-parameter mutations | Encoded-frame/native decoder fuzzing is separate |
+| Codec enumeration | Advertised SDP codecs and in-use RTP stats | Advertisement does not prove negotiation |
+| Signalling black box fuzzing | M3 SDP mutation / M3+ local parser subset | Burp/application fuzzer for server messages and schema validation |
+| Signaling denial of service | T8 bounded local browser loop | No signaling traffic is sent to the server; use a bounded signaling harness |
+| API flooding | External/manual | Bounded application load test with throttling, quotas and recovery evidence |
+| SIP over WebSocket | External/manual, conditional on confirmed SIP use | External Tests: sipexer; exact WS/WSS path, accounts, registration/dialog checks |
+| Injection security | M3 SDP modification / M3+ local parsing | Server-side SQL/command/template and application-message injection need dedicated tests |
+| API security | M5 authorization / identifier replay | Business logic, CSRF, schemas and endpoint-specific requirements remain manual |
+
+SIP applicability is unknown until established; SDP alone is not SIP evidence.
+RTP/codec fuzzing shared between groups uses the same evidence, not two runs.
+STUN/host-only gathers do not count as TURN tests. TLS scan completion without
+protocol-check results does not count as version/cipher analysis. Agent installation
+does not count as a media-permission outcome. No checklist item claims a security
+pass from missing data or a successful API call.
+
+M3+ now interleaves per-line, codec and structural mutation families after the
+baseline, so long descriptions do not exhaust the case budget before codec tests.
+The existing case count, payload bounds, authorization and cleanup remain in force.
+M5 now checks **injectionEnabled + host allow-list + Burp Target scope** before
+every request, including the baseline and after configuration/scope revocation.
+Its unauthenticated variant explicitly states that only known auth headers were
+removed; URL/body tokens and custom authentication still need review.
+M6 result/error/candidate evidence now preserves each run's exact listener URL
+and credentials, so manually compared credential conditions remain attributable
+after the configuration changes. Historical evidence without those fields stays
+explicitly unknown; the current configuration is never substituted for run inputs.
+
+Reload both the extension and browser page to install the new agent. Report
+generation remains passive; external commands are generated only, and no new
+raw-packet or automatic signaling-load backend was introduced.
+
+### 1.0.4 additions — twelve-area test-results report
+
+**Findings (M7)** → **Generate report** creates these sections in the requested order:
+
+1. Signaling Channel Security (WebSocket / HTTP-SSE)
+2. Session Description Protocol (SDP) Manipulation
+3. NAT Traversal Infrastructure (STUN / TURN)
+4. Interactive Connectivity Establishment (ICE) & Candidate Harvesting
+5. Media Transport & Encryption (SRTP / SRTCP)
+6. Key Exchange & Handshake (DTLS)
+7. DataChannel Security (SCTP)
+8. Media Server Architecture (SFU / MCU / Gateway)
+9. Authentication, Session Management & Access Control
+10. Client-Side Security (Browser APIs, Permissions, XSS/Origin)
+11. Recording, Storage & Regulatory Compliance (Media Archival)
+12. Denial of Service (DoS / Resource Exhaustion)
+
+Every section contains a table with the test/check, status, observed result and
+limitations, and links to its raw evidence in the report. The opening coverage
+table counts recorded results, incomplete/pending checks and coverage gaps.
+SDP before/after and individual parser outcomes, DataChannel sends/errors/closure,
+STUN/TURN gather results, latest transport/stats observations, Python TLS
+per-check results and every authorization replay (URL, variant, HTTP status,
+length, body hash, baseline comparison and flag) are included. Configured
+identities, selected ICE servers, enabled checkboxes and generated commands do
+not count as executed tests. Raw evidence and credentials are preserved in full.
+
+**Observed** is passive evidence; **Completed** describes execution, not an overall
+security pass. **Review required** is a triage lead. Errors, partial/unknown,
+cancelled, queued/running and skipped/blocked states remain visible. SDP baseline
+controls are separate from mutations; an incomplete summary is not a complete
+run. A completed TLS scan does not leave its old start event marked pending.
+
+**Not tested** means no result captured for an available check. **Not supported**
+identifies checks the app does not implement, with the missing work stated. SFU/MCU
+architecture and recording/compliance are explicit coverage gaps; the report
+does not infer them from endpoint names or claim compliance. Raw media/SCTP/DTLS,
+WebSocket/SSE application security, session lifecycle, XSS/origin enforcement and
+server DoS coverage gaps also remain explicit. DataChannel-only captured SDP
+marks SRTP profile checks **Not applicable** for that peer. TCP TLS listener
+results go to signaling or STUN/TURN, never to media DTLS.
+
+Generation reads existing telemetry, authorization results and captured HTTP
+metadata only; it starts no scans/replays. Existing module analysis, configuration,
+telemetry totals and CSV export remain available. Twelve report regression tests
+cover empty/missing results, incomplete jobs, category mapping, conservative
+interpretation, credentials, Markdown escaping and linked raw evidence.
+
+### 1.0.3 additions — integrated Python TLS testing
+
+**TLS Tests** runs SSLyze 6.3.1 through a bundled Python adapter. Install Python
+3.10+ on the Burp machine, enter its executable path (or `python` when on PATH),
+and click **Setup TLS runner**. This creates a private environment under
+`~/.webrtc-testsuite/tls/` and downloads dependencies from PyPI. Setup does not scan
+any target. **Check runtime** verifies the pinned tool and native imports.
+
+Use **Refresh observed endpoints** to populate suggestions from captured HTTPS
+pages and configured secure TURN listeners, or type one endpoint. Supported
+forms: `https://host:port/path`, `wss://host:port/path`, `tls://host:port`, and
+`turns:host:5349?transport=tcp` (port defaults to 5349 for `turns:`). These are
+listener addresses, never allocated relay/ICE candidate addresses. Plain TURN,
+STUN and `turns:...?transport=udp` are rejected. No HTTP checks are sent to a TURN
+TLS listener; credentials are not needed to inspect its TLS handshake.
+
+The tab shows the exact URL checked against Burp Target scope. HTTPS keeps its
+path/query; WSS maps to HTTPS with the same authority/path/query; `tls://` and
+`turns:` map to `https://host:port/`. Put that URL in scope, allow the hostname in
+Config, enable injection, and click **Run TLS tests**. A live browser agent is
+not needed for this scan. The Python process connects directly; its handshakes
+do not appear in Burp HTTP history and do not use Burp's upstream proxy settings.
+
+Standard checks cover SSL 2/3, TLS 1.0–1.3 cipher support, certificate deployment
+and validation, compression, fallback SCSV and elliptic curves. The optional
+checkbox adds Heartbleed, OpenSSL CCS injection, ROBOT and renegotiation probes.
+Both that checkbox and **Include this selected TLS endpoint in Run All** default
+off. Save settings to persist the selection for Run All; it scans only that
+selection and never every discovered host automatically.
+
+Execution uses argument lists and JSON stdin with the bundled adapter; editable
+commands and arbitrary scripts are not executed. One task runs at a time, with
+two concurrent TLS connections, five-second network timeouts and no retries.
+The scan budget is 15–300 seconds (default 180); setup has a five-minute budget.
+Stop, unload, scope removal, or disabled injection/allow-list permission cancels
+the scan and terminates its process tree. Scope is rechecked every 200 ms while
+running. Output is capped at 8 MiB per stream; overflow is an incomplete failure.
+
+`tls-runtime`, `tls-scan-start`, `tls-scan-result` and `tls-scan-error` appear in
+Telemetry and the TLS tab. Run All and M7 include per-check status and supported
+protocol/weak-cipher/vulnerability evidence. Complete means execution completed;
+errors, timeouts, cancellations and partial checks are never reported as passed.
+Certificate validation uses SSLyze's packaged trust stores, which can differ from
+the browser's trust policy. Select a TLS result to inspect the full SSLyze JSON.
+TLS results cover the TCP listener only; M6 handles TURN allocation, and raw media
+DTLS/SRTP tests require another backend.
+
+Validation adds five Python unit tests and a real localhost TLS smoke test for
+both profiles. Run `python -m unittest discover -s runner -p 'test_*.py'`. With
+SSLyze installed, run `python runner/smoke_tls_runner.py` for the local fixture.
+The optional JVM integration test creates a real managed environment, checks the
+runtime and scans a closed localhost listener. Set `WEBRTC_TLS_SMOKE_PYTHON` to a
+Python executable before running Gradle tests to include it; otherwise it skips.
+SSLyze is installed separately under its [AGPLv3 license](https://github.com/nabla-c0d3/sslyze);
+the JAR bundles our adapter, not SSLyze or a Python interpreter.
 
 The earlier 1.0.0 release stabilized the 0.9.0 Tier 1 feature set: the
 extension and bundled agent versions were aligned at 1.0.0 with no functional
 change from 0.9.0 beyond the version bump. Tier 2 (T9–T14) remains planned
 (see [PLAN.MD](PLAN.MD)).
+
+### 1.0.2 additions — short-lived DataChannels
+
+In **DataChannel Fuzz (M4)**, configure the payload and limits, then tick
+**Run on next DataChannel open (once, this session)** before starting a fresh
+call. The next channel that reaches `open` on an allow-listed, in-scope browser
+page requests one M4 run directly from its open handler. This avoids waiting for
+the normal three-second command poll. The bridge checks fresh page/channel
+telemetry, scope, allow-list and injection; the browser rechecks authorization
+and channel readiness before each send. Existing message/byte/rate limits apply.
+
+The option snapshots the settings shown when armed and disarms after one run is
+queued. A busy page leaves it armed for another open event. Uncheck it or use
+**Stop** to disarm and cancel the automatic run. Arming is never persisted or
+restored on extension/bridge restart. It applies to any eligible page; the manual
+channel selection is not used. It does not launch Run All or unrelated tests.
+
+`dc-created: local` means creation on the local peer, not successful opening.
+New lifecycle detail records initial channel state, whether it ever opened,
+elapsed lifetime, peer/ICE/signaling/SCTP states, error details and page calls to
+channel/peer `close()` with caller stacks. The M4 results include `pc-state` and
+SDP errors; Run All and the M7 passive report explain channels that close before
+open and observed connectivity failures without classifying them as vulnerabilities.
+
+A channel that never reaches `open` cannot send M4 payloads. To investigate early
+closure, first disable SDP mutation and automatic fuzzing, reload and start a
+fresh call, then inspect `sdp-error`, `pc-state` and `dc-state`. A `close-called`
+record identifies a page API call; it does not by itself establish why the app
+closed the connection. Compare with injection disabled if the failure persists.
+
+Reload the extension **and the browser page** to install agent 1.0.2. The optional
+real-browser smoke check verifies delivery before a channel closes after 700 ms:
+set `CHROME_PATH` to a Chromium executable and run `node agent/browser-smoke.cjs`.
 
 ### 1.0.1 correction — embedded video frames
 
@@ -72,8 +275,8 @@ behavior, duplicate policies and scope/configuration gating.
 - **T7 signaling endpoint metadata** — reads only what Burp already captured and
   reports the HTTPS/WSS signaling origins and whether they sent
   `Strict-Transport-Security`, as review items. Burp proxy history does not expose
-  the negotiated TLS version/cipher here, so confirming those stays with the
-  external `testssl.sh` recipe.
+  the negotiated TLS version/cipher here. Test listener capabilities separately
+  with TLS Tests / SSLyze or the external `testssl.sh` recipe.
 - **T8 opt-in signaling/ICE-restart flood** — a new tab drives a bounded, local
   `createOffer`/`setLocalDescription` loop (1–20 attempts, 500–5000 ms apart) on a
   throwaway peer. Nothing is sent to the signaling server. Off by default; Run All
@@ -128,7 +331,7 @@ passive, so it can be generated any time without touching the target.
 
 - [x] Print the extension name and version to Burp's extension **Output** console
   on every load/reload so the tester can confirm which version is running
-  (`WebRTC Test Suite v1.0.1 loaded`). The version is read from the loaded JAR's
+  (`WebRTC Test Suite v1.0.5 loaded`). The version is read from the loaded JAR's
   build metadata (manifest `Implementation-Version`, then a generated
   `webrtc-version.properties`), so the message identifies the actual loaded
   artifact rather than a hard-coded string.
@@ -180,7 +383,8 @@ Channels (RFC 8831)](https://www.rfc-editor.org/rfc/rfc8831.html), and the
 **Design boundary.** This tool is a Burp extension plus a browser agent that hooks
 the **W3C WebRTC JavaScript API** (SDP, ICE, DataChannel) and observes/rewrites
 HTTP(S). It therefore reaches the **signaling-visible and API-visible** surface.
-It does not send raw packets, so the **media plane** (RTP/RTCP/SRTP) and
+The integrated TLS Tests runner separately reaches selected TLS-over-TCP
+listeners. It does not send raw media packets, so the **media plane** (RTP/RTCP/SRTP) and
 **native-parser memory-safety** surfaces are out of scope by construction and are
 delegated to the right tools rather than faked.
 
@@ -276,10 +480,11 @@ and exposed stats fields also limit what the JavaScript API can observe.
 - ⛔ **Full TURN-as-C2 tunnelling** (arbitrary-destination relay, SOCKS over TURN)
   — needs a raw TURN client such as Praetorian's `TURNt`; we test the precondition
   (relay allocation) only.
-- ⛔ **IdP/identity-provider trust model** and **TLS scanning** of signaling
-  endpoints — application-level / dedicated TLS scanners.
+- ⛔ **IdP/identity-provider trust model** — application-level testing.
+- ✅ **TLS scanning** of selected HTTPS/WSS or TURN-over-TLS listeners — integrated
+  Python SSLyze runner, scope gated and opt-in (1.0.3).
 
-The external execution boundary above remains in place. The
+Other external tests remain command generation only. The
 [External Tests tab](#external-tests-command-builder) provides commands
 for relevant external tools; generating a command does not execute the test or
 mark that external surface as scanned by the extension.
@@ -742,12 +947,13 @@ clearly marks anything it skipped and why. Export the results from the Findings
 | M2 Telemetry bridge | Telemetry (M2) | Embedded loopback HTTP server; agent beacons SDP / ICE (private-IP flagged) / DTLS-SRTP cipher / DataChannel / `stats-snapshot` / `dtls-cert` events. Imports a `chrome://webrtc-internals` dump and cross-checks candidates, ciphers and codecs; **Capture stats (T1)** forces a fresh snapshot. |
 | M3 SDP mutation | SDP Mutation (M3) | Scope-gated incoming/outgoing SDP edits, persisted rules, before/after evidence, and browser acceptance/rejection telemetry. |
 | M3+ SDP fuzz | SDP Fuzz (M3+) | Mutates every line of the latest observed SDP with malformed/known payloads and bounded size/overflow variants, then records accepted vs rejected on a throwaway peer. Local parse only, no packets sent. |
-| M4 DataChannel fuzz | DataChannel Fuzz (M4) | Scope-gated payload sends (text / hex / json / boundary) over a live DataChannel, with bounded size and rate. |
+| M4 DataChannel fuzz | DataChannel Fuzz (M4) | Scope-gated payload sends (text / hex / json / boundary) over a live DataChannel, with bounded size and rate. Optional one-shot run on the next open event; channel/peer lifecycle diagnostics. |
 | M5 Authz matrix | Authz Matrix (M5) | Right-click any request → replay across identities, substitute identifiers, unauth; flags cross-principal 2xx. |
 | M6 TURN/STUN | TURN/STUN (M6) | Isolated ICE gather against a configured STUN/TURN server; reports srflx/relay observations; credentials preserved in errors. |
 | T8 Flood | Signaling Flood (T8) | Opt-in, bounded local `createOffer`/`setLocalDescription`/ICE-restart loop on a throwaway peer; reports ICE-credential reuse. Nothing is sent to the signaling server. |
 | External Tests | External Tests | Generates Linux/Bash commands for ten external RTC tools from telemetry and Config; Ready/Missing states, editable commands, Markdown and TURNt-config export. Generates text only. |
-| M7 Findings | Findings (M7) | Compiles and saves a Markdown report (including credentials) and exports telemetry plus authorization-matrix results as CSV. Passive. |
+| TLS Tests | TLS Tests | Integrated Python / SSLyze setup and scope-gated TLS-over-TCP scan of one selected signaling or TURN listener; optional Run All inclusion and M7 evidence. |
+| M7 Findings | Findings (M7) | Point-form methodology checklist followed by twelve evidence areas, per-test states, authorization replay rows and explicit external/manual next steps; configuration/module analysis and CSV retained. Passive, credentials intact. |
 
 ## Build
 
@@ -778,7 +984,7 @@ node --test agent/webrtc-agent.test.cjs agent/active-tests.test.cjs
 ## Load in Burp
 
 1. Extensions → Installed → Add → Extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.0.1 loaded`; a **WebRTC** suite tab appears.
+2. Output shows `WebRTC Test Suite v1.0.5 loaded`; a **WebRTC** suite tab appears.
 
 ## Use
 
@@ -795,6 +1001,8 @@ node --test agent/webrtc-agent.test.cjs agent/active-tests.test.cjs
 6. Open **External Tests** to copy ready Linux/Bash commands for the external RTC
    tools, or export the Markdown guide and a TURNt configuration file. Commands are
    generated, not executed.
+7. Open **TLS Tests**, select Python and click Setup once, then select an endpoint
+   and Run. See [integrated Python TLS testing](#103-additions--integrated-python-tls-testing).
 
 ## SDP mutation (M3)
 
@@ -842,7 +1050,10 @@ Both are active tests driven from their sub-tabs and gated on Burp Target scope.
 - **DataChannel Fuzz (M4):** with a call open, the live DataChannel list updates
   automatically; pick one, choose a payload mode (text / hex / json
   / boundary) and count/interval, then **Run**. Payloads are bounded (≤ 65,536
-  bytes each, ≤ 1 MiB per run, 1–50 messages at 100–1000 ms). **Stop** cancels.
+  bytes each, ≤ 1 MiB per run, 1–50 messages at 100–1000 ms). For short-lived channels,
+  set the payload and tick **Run on next DataChannel open (once, this session)**
+  before starting a call. **Stop** cancels the current test and disarms automatic
+  testing. See the [1.0.2 additions](#102-additions--short-lived-datachannels).
 - **TURN/STUN (M6):** enter a `stun:` / `turn:` / `turns:` URI (the host:port must
   be in Burp Target scope — **Show scope URL** shows the URL that gate checks).
   **Gather candidates** runs an isolated ICE gather on a throwaway peer and reports
@@ -855,6 +1066,7 @@ Both are active tests driven from their sub-tabs and gated on Burp Target scope.
 ```
 build.gradle.kts / settings.gradle.kts   Gradle Kotlin + Shadow fat jar
 agent/webrtc-agent.js                     generic W3C hook, bundled into the jar
+runner/tls_runner.py                      bundled SSLyze adapter (Python runtime installed separately)
 src/main/kotlin/webrtc/
   WebRtcExtension.kt                       entry point
   config/                                  M0 model, store, detectors, active-test config
@@ -864,6 +1076,9 @@ src/main/kotlin/webrtc/
   internals/InternalsComparator.kt         dump-vs-telemetry comparison
   external/ExternalInputs.kt               passive TURN/STUN/page observations for commands
   external/ExternalTools.kt                ten-tool command catalogue + Bash/YAML rendering
+  tls/                                    TLS target parsing, managed runtime and scoped process runner
+  report/SecurityTestReport.kt             twelve-area evidence/result tables and Markdown rendering
+  report/CoverageCheck.kt                  methodology checklist, coverage limits and next steps
   telemetry/                               M2 event model
   telemetry/StatsSnapshot.kt               T1 getStats snapshot parser
   telemetry/CertificateAnalyzer.kt         T2 X.509 parse + fingerprint binding

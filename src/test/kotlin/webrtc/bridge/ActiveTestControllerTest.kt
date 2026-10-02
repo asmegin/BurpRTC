@@ -176,4 +176,70 @@ class ActiveTestControllerTest {
         assertEquals(DataChannelFuzzConfig(), old.dataChannelFuzz)
         assertEquals(IceProbeConfig(), old.iceProbe)
     }
+
+    @Test fun `next open fuzz is opt in one shot and only accepts an open channel`() {
+        heartbeat()
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        val settings = DataChannelFuzzConfig(payload = "automatic", count = 2)
+        controller.armNextOpenFuzz(settings)
+        heartbeat(state = "connecting")
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        heartbeat(state = "closed")
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        assertTrue(controller.nextOpenFuzzArmed())
+        heartbeat()
+        val id = controller.queueNextOpenFuzz("agent-a", frame, "dc1")!!
+        assertFalse(controller.nextOpenFuzzArmed())
+        assertEquals(id, controller.automaticFuzzJob())
+        assertEquals("automatic", controller.commands("agent-a", frame).single()["config"]!!.jsonObject["payload"]!!.jsonPrimitive.content)
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        assertEquals(1, controller.commands("agent-a", frame).size)
+        assertFalse(ActiveTestController(store, scopes::contains, telemetry).nextOpenFuzzArmed())
+    }
+
+    @Test fun `automatic fuzz checks agent frame freshness scope allow list and injection`() {
+        heartbeat(); controller.armNextOpenFuzz(DataChannelFuzzConfig())
+        assertNull(controller.queueNextOpenFuzz("other", frame, "dc1"))
+        assertNull(controller.queueNextOpenFuzz("agent-a", "https://example.test/elsewhere", "dc1"))
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "unknown"))
+        scopes.clear()
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        scopes.add(frame)
+        store.save(store.config.copy(hostAllowList = listOf("other.test")))
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        store.save(store.config.copy(hostAllowList = listOf("example.test"), injectionEnabled = false))
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        store.save(store.config.copy(injectionEnabled = true))
+        clock += 15001
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        assertTrue(controller.nextOpenFuzzArmed())
+        heartbeat()
+        val id = controller.queueNextOpenFuzz("agent-a", frame, "dc1")!!
+        scopes.clear()
+        assertFalse(controller.authorize("agent-a", frame, id))
+    }
+
+    @Test fun `busy page keeps automatic arm and disarming cancels automatic jobs`() {
+        heartbeat(); controller.armNextOpenFuzz(DataChannelFuzzConfig())
+        val manual = controller.queueCaptureStats("agent-a")
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+        assertTrue(controller.nextOpenFuzzArmed())
+        controller.cancelJob(manual)
+        val id = controller.queueNextOpenFuzz("agent-a", frame, "dc1")!!
+        assertTrue(controller.authorize("agent-a", frame, id))
+        controller.disarmNextOpenFuzz()
+        assertFalse(controller.authorize("agent-a", frame, id))
+        controller.armNextOpenFuzz(DataChannelFuzzConfig())
+        controller.cancelAll()
+        assertFalse(controller.nextOpenFuzzArmed())
+        assertNull(controller.queueNextOpenFuzz("agent-a", frame, "dc1"))
+    }
+
+    @Test fun `automatic arming validates caps and is never persisted`() {
+        assertFailsWith<IllegalArgumentException> { controller.armNextOpenFuzz(DataChannelFuzzConfig(count = 50, maxBytes = 65536)) }
+        controller.armNextOpenFuzz(DataChannelFuzzConfig())
+        assertFalse(ActiveTestController(ConfigStore(api), scopes::contains, telemetry).nextOpenFuzzArmed())
+        store.save(store.config.copy(injectionEnabled = false))
+        assertFailsWith<IllegalArgumentException> { controller.armNextOpenFuzz(DataChannelFuzzConfig()) }
+    }
 }

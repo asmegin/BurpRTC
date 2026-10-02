@@ -1,11 +1,13 @@
 # PLAN.MD — WebRTC Test Suite coverage expansion
 
-Status: **Tier 1 (T1–T8) shipped; released as 1.0.1** (extension and agent aligned at
-1.0.1; CSP stripping preserves enforced frame-ancestors policies). Tier 2 (T9–T14)
+Status: **Tier 1 (T1–T8) shipped; current build 1.0.5** (extension and agent aligned at
+1.0.5; complete methodology checklist plus twelve-area evidence report;
+integrated Python TLS runner; M4 can run once on the next channel open, with lifecycle diagnostics;
+CSP stripping preserves enforced frame-ancestors policies). Tier 2 (T9–T14)
 and the Tier 3 external catalogue additions remain planned. Target: increase self-contained coverage of the
 extension against Enable Security's WebRTC pentest methodology, the HackTricks WebRTC DoS
 note, the WebRTC Security whitepaper, and `awesome-rtc-hacking`, while keeping the stated
-design boundary (browser W3C JS-API hook + Burp traffic; no raw packets, no native fuzzing).
+design boundary (browser W3C JS-API hook + Burp traffic + selected TLS-over-TCP listeners; no raw media packets, no native fuzzing).
 
 Baseline: extension 0.8.0, agent 0.7.0. Implemented on extension 0.9.0 / agent 0.8.0. All
 changes are additive; the full JVM (70) and agent (30) suites pass.
@@ -16,7 +18,7 @@ Tier 1 implementation notes:
 - T2/T4/T5 live in `CertificateAnalyzer` + `Detectors`; T3 is a dedicated Run All privacy
   section; T6 extends `sdpFuzzCases`; T7 is `workflow/SignalingMetadata` (passive Burp proxy
   history read; negotiated TLS version/cipher are not exposed by the Montoya API, so that
-  remains a `testssl.sh` review item); T8 is `SignalingFloodConfig` + `SignalingFloodPanel`
+  can now be tested separately with TLS Tests / SSLyze, or external `testssl.sh`); T8 is `SignalingFloodConfig` + `SignalingFloodPanel`
   (opt-in, default off, Run All includes it only when confirmed).
 - T9 (WebSocket handlers) is feasible — the pinned Montoya 2026.7 API exposes
   `Proxy.webSocketHistory()` and `ProxyWebSocketCreationHandler` — but is deferred to Tier 2.
@@ -27,11 +29,21 @@ Tier 1 implementation notes:
   mutation; M3+ SDP parser fuzz; M4 DataChannel fuzz; M5 HTTP authz matrix/IDOR; M6
   STUN/TURN gather + relay allocation; M7 report/CSV; chrome://webrtc-internals compare;
   External Tests command builder; full credential visibility.
-- Known code gaps confirmed: agent `reportStats` reads only `transport` + one
-  `candidate-pair`; no certificates, no RTP stats, no ICE-ufrag/pwd analysis; `Detectors.kt`
-  lacks attribute/cert/privacy logic; only HTTP handler registered (`WebRtcExtension.kt:26`)
-  — no WebSocket handling; M5 replays HTTP only; README public-IP/relay-only privacy check
-  is unimplemented.
+- M7 report uses the twelve requested security areas, with per-test statuses,
+  linked raw evidence, authorization replay rows, partial/pending/cancelled jobs,
+  and explicit unsupported/manual coverage (including architecture and archival).
+- 1.0.5 adds a point-form summary for all 22 distinct requested methodology checks,
+  plus ten other categories. Coverage capability is separate from evidence status;
+  every unsupported check has a concrete external/manual next step. Run All shares
+  the checklist. STUN gathers, baseline replays and unrelated TLS/SDP events cannot
+  satisfy TURN auth, signaling auth, TLS cipher or codec-fuzz coverage.
+- 1.0.5 interleaves M3+ mutation families so long SDP does not crowd out codec
+  cases, and rechecks all three authorization gates before every M5 request.
+- Remaining gaps: no automated WebSocket/SIP auth or signaling-message fuzzer;
+  no server signaling/API load test; TURN allocation does not test destination
+  restrictions or automatically compare credential conditions; no raw RTP/SRTP,
+  DTLS attack harness or native decoder fuzzing. The checklist documents these;
+  reporting them does not implement them. T9–T14 remain planned.
 
 ## Boundary and safety rules (apply to every task)
 
@@ -39,7 +51,11 @@ Tier 1 implementation notes:
   via `ScopeGate` + allow-list + `injectionEnabled`, exactly as M3/M4/M6 do today.
 - Bounded by construction: hard caps on message counts, sizes, durations, concurrency;
   `Stop` must cancel; timeouts must release peers/timers.
-- The extension must not execute external tools; External Tests only generates commands.
+- External Tests only generates commands. The user-authorized 1.0.3 exception is
+  TLS Tests: run the bundled Python adapter with managed SSLyze 6.3.1, one selected
+  scope-gated TCP listener, no shell/arbitrary script execution, bounded duration
+  and cancellation on Stop, unload or scope/config revocation. Python 3.10+ is a
+  prerequisite; setup installs dependencies without connecting to a scan target.
 - New telemetry event types go through `BridgeServer.store`/`summarize`, `EventTypes.KNOWN`,
   and the Run All / M7 passive review. Credentials remain preserved (no masking).
 - Adding a new agent capability requires a **page reload** to pick up the bundled agent;
@@ -172,8 +188,10 @@ catalogue section:
 ## Explicitly out of scope
 
 RTP/RTCP injection, RTP bleed, RTP flooding, raw RTP packet fuzz, SRTP auth, native-parser/
-RCE fuzzing, full TURN-as-C2 tunnelling, live TLS scanning, IdP trust. Keep these in the
+RCE fuzzing, full TURN-as-C2 tunnelling, raw media DTLS/SRTP testing, IdP trust. Keep these in the
 External Tests command builder / labs and state so in docs.
+
+Selected TLS-over-TCP listener scans are supported by TLS Tests in 1.0.3.
 
 ## Cross-cutting work (required by the above)
 
@@ -191,7 +209,11 @@ External Tests command builder / labs and state so in docs.
 - `gradlew shadowJar` — fat jar builds; confirm manifest `Implementation-Version`.
 - Manual: reload extension + browser page, join a call, confirm new events appear and Run All
   reports them; verify scope gating by un-scoping a target and confirming active tests skip.
-- Confirm no task executes an external tool and no live scan is triggered by TLS metadata (T7).
+- Confirm External Tests remains a command builder and passive TLS metadata (T7)
+  triggers no scan. TLS Tests runs only on explicit Run, or opt-in Run All.
+- `python -m unittest discover -s runner -p 'test_*.py'` — Python result/input tests.
+- With SSLyze installed: `python runner/smoke_tls_runner.py` — real localhost-only
+  TLS fixture, standard and optional scan profiles; no HTTP requests on the listener.
 
 ## Open questions / decisions to resolve during implementation
 

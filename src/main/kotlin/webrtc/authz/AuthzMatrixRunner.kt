@@ -7,6 +7,7 @@ import webrtc.config.IdentityProfile
 import webrtc.config.ConfigStore
 import webrtc.scope.ScopeGate
 import java.security.MessageDigest
+import java.net.URI
 
 data class AuthzResult(
     val baselineUrl: String,
@@ -40,10 +41,16 @@ class AuthzMatrixRunner(
         val cfg = configStore.config
         val url = baseReq.url()
 
-        if (!shouldContinue() || !scope.inScope(url)) {
-            onResult(AuthzResult(url, "SKIPPED", 0, 0, "", false, false, "out of scope — not replayed", null))
-            return
+        fun permitted(requestUrl: String): Boolean {
+            val current = configStore.config
+            val host = runCatching { URI(requestUrl).host }.getOrNull()
+            val allowed = shouldContinue() && current.injectionEnabled && host != null &&
+                ScopeGate.hostAllowed(host, current.hostAllowList) && scope.inScope(requestUrl)
+            if (!allowed) onResult(AuthzResult(requestUrl, "SKIPPED", 0, 0, "", false, false,
+                "Replay stopped: injection, host allow-list, Burp Target scope and continuation permission are required before every request", null))
+            return allowed
         }
+        if (!permitted(url)) return
 
         val baseRr = api.http().sendRequest(baseReq)
         val baseBody = baseRr.response()?.bodyToString() ?: ""
@@ -52,7 +59,7 @@ class AuthzMatrixRunner(
 
         // (a) unchanged, under every other identity
         for (id in cfg.identities) {
-            if (!shouldContinue() || !scope.inScope(url)) return
+            if (!permitted(url)) return
             val rr = api.http().sendRequest(applyIdentity(baseReq, id))
             onResult(toResult(url, "identity:${id.name}", rr, baseHash, null, "unchanged request as ${id.name}"))
         }
@@ -60,15 +67,16 @@ class AuthzMatrixRunner(
         // (b) current identity, other principals' identifiers substituted
         for (id in cfg.identities) {
             val req = substituteIdentifiers(baseReq, id, cfg.identifierKeys) ?: continue
-            if (!shouldContinue() || !scope.inScope(req.url())) return
+            if (!permitted(req.url())) return
             val rr = api.http().sendRequest(req)
             onResult(toResult(url, "sub:${id.name}", rr, baseHash, null, "identifiers set to ${id.name}'s values"))
         }
 
         // (c) unauthenticated
-        if (!shouldContinue() || !scope.inScope(url)) return
+        if (!permitted(url)) return
         val rrUnauth = api.http().sendRequest(stripAuth(baseReq))
-        onResult(toResult(url, "unauth", rrUnauth, baseHash, null, "auth material stripped"))
+        onResult(toResult(url, "unauth", rrUnauth, baseHash, null,
+            "known authentication headers stripped; URL/body tokens and application-specific authentication require separate review"))
     }
 
     private fun toResult(

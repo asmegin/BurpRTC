@@ -4,21 +4,24 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(`${__dirname}/webrtc-agent.js`, 'utf8');
 
-function harness() {
+function harness(initialChannelState = 'open') {
   const events = [], sends = [], timers = new Map(), peers = [];
   let queued = [], permit = true, sequence = 0, timerId = 0, gather = true, iceFailure = false;
   let onSend = () => {};
+  let autoRequest = () => null;
+  const autoRequests = [];
   class Emitter {
     constructor() { this.listeners = {}; }
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
     emit(type, event) { for (const fn of this.listeners[type] || []) fn(event); }
   }
   class Channel extends Emitter {
-    constructor(label) { super(); this.label = label; this.readyState = 'open'; this.bufferedAmount = 0; }
+    constructor(label) { super(); this.label = label; this.readyState = initialChannelState; this.bufferedAmount = 0; }
     send(value) { sends.push(value); onSend(value); }
+    close() { this.readyState = 'closed'; this.emit('close'); }
   }
   class Peer extends Emitter {
-    constructor(config) { super(); this.config = config; this.sctp = { maxMessageSize: 65536 }; peers.push(this); }
+    constructor(config) { super(); this.config = config; this.connectionState = 'new'; this.iceConnectionState = 'new'; this.signalingState = 'stable'; this.sctp = { maxMessageSize: 65536, state: 'connecting' }; peers.push(this); }
     createDataChannel(label) { return new Channel(label); }
     createOffer() { return Promise.resolve({ type: 'offer', sdp: 'v=0\r\na=fingerprint:sha-256 AA\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10\r\n' }); }
     getStats() {
@@ -48,7 +51,7 @@ function harness() {
       if (typeof sdp !== 'string' || !/(^|\r\n)v=0/.test(sdp)) return Promise.reject(new Error('Failed to parse SessionDescription'));
       return Promise.resolve();
     }
-    close() { this.closed = true; }
+    close() { this.closed = true; this.connectionState = 'closed'; this.signalingState = 'closed'; this.emit('connectionstatechange'); }
   }
   const context = {
     location: { href: 'https://example.test/call' }, navigator: {}, AbortController, TextEncoder,
@@ -59,8 +62,10 @@ function harness() {
     fetch: (url, options) => {
       if (options.method === 'POST') { events.push(JSON.parse(options.body)); return Promise.resolve({ ok: true }); }
       const query = new URL(url, 'http://localhost').searchParams;
+      let automatic = null;
+      if (query.has('autoFuzz')) { autoRequests.push(query.get('autoFuzz')); automatic = autoRequest(query.get('autoFuzz')); }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({
-        commands: query.get('poll') === '1' ? queued : [], authorized: permit && query.has('authorize')
+        commands: automatic ? [automatic] : query.get('poll') === '1' ? queued : [], authorized: permit && query.has('authorize')
       }) });
     }
   };
@@ -77,6 +82,7 @@ function harness() {
     queued = [value]; return value;
   };
   return { events, sends, timers, peers, context, flush, tick, queue,
+    auto: callback => { autoRequest = callback; }, autoRequests, nativeChannel: label => new Channel(label),
     channel: () => new context.RTCPeerConnection().createDataChannel('same-label'),
     start: async command => { await flush(); const value = queue(command); await tick(3000); return value; },
     permit: value => { permit = value; }, onSend: value => { onSend = value; },
@@ -149,6 +155,66 @@ test('M4 rejects oversized runs and malformed binary payloads', async () => {
   }
 });
 
+test('M4 open-triggered command sends without waiting for the poll and runs once per channel', async () => {
+  const h = harness('connecting');
+  h.auto(channelId => h.queue({ ...fuzz(), channelId }));
+  const channel = h.channel(); await h.flush();
+  assert.equal(h.autoRequests.length, 0); assert.equal(h.sends.length, 0);
+  channel.readyState = 'open'; channel.emit('open'); await h.flush();
+  assert.deepEqual(h.sends, ['hello']);
+  assert.equal(h.events.find(e => e.type === 'command-result').status, 'completed');
+  assert.equal(h.events.filter(e => e.type === 'agent-state').at(-1).channels[0].state, 'open');
+  channel.emit('open'); await h.flush(); await h.tick(3000);
+  assert.deepEqual(h.autoRequests, ['dc1']); assert.equal(h.sends.length, 1);
+});
+
+test('M4 connecting channels that close are diagnosed and never request automatic payloads', async () => {
+  const h = harness('connecting'); h.auto(channelId => h.queue({ ...fuzz(), channelId }));
+  const channel = h.channel(); h.peers[0].iceConnectionState = 'failed';
+  channel.close(); await h.flush();
+  assert.equal(h.autoRequests.length, 0); assert.equal(h.sends.length, 0);
+  const state = h.events.find(e => e.type === 'dc-state' && e.detail.includes('before reaching open'));
+  assert.equal(state.everOpened, false); assert.equal(state.iceConnectionState, 'failed');
+  assert.equal(typeof state.elapsedMs, 'number');
+  assert.ok(h.events.some(e => e.type === 'dc-state' && e.action === 'close-called' && e.stack));
+});
+
+test('M4 automatic command honors revocation and closure during bridge authorization', async () => {
+  for (const action of ['revoke', 'close']) {
+    const h = harness('connecting'); const channel = h.channel();
+    h.auto(channelId => {
+      const command = h.queue({ ...fuzz(), channelId });
+      if (action === 'revoke') h.permit(false); else channel.close();
+      return command;
+    });
+    channel.readyState = 'open'; channel.emit('open'); await h.flush();
+    assert.equal(h.sends.length, 0);
+    assert.equal(h.events.find(e => e.type === 'command-result').status, action === 'revoke' ? 'cancelled' : 'failed');
+  }
+});
+
+test('M4 remote already-open channels trigger once and disarmed bridge sends nothing', async () => {
+  const h = harness(); await h.flush();
+  const pc = new h.context.RTCPeerConnection();
+  // A channel created by the native peer is then delivered by the remote event.
+  const channel = h.nativeChannel('remote');
+  pc.emit('datachannel', { channel }); await h.flush();
+  assert.equal(h.autoRequests.length, 1); assert.equal(h.sends.length, 0);
+  assert.ok(h.events.some(e => e.type === 'dc-created' && e.detail === 'remote'));
+  channel.emit('open'); await h.flush();
+  assert.equal(h.autoRequests.length, 1);
+});
+
+test('peer failure and page close calls carry lifecycle evidence', async () => {
+  const h = harness('connecting'); const channel = h.channel(); const pc = h.peers[0];
+  pc.connectionState = 'failed'; pc.iceConnectionState = 'failed'; pc.emit('connectionstatechange');
+  channel.emit('error', { error: { name: 'RTCError', message: 'SCTP failed', errorDetail: 'sctp-failure', sctpCauseCode: 12 } });
+  pc.close(); await h.flush();
+  assert.ok(h.events.some(e => e.type === 'pc-state' && e.connectionState === 'failed' && e.iceConnectionState === 'failed'));
+  assert.ok(h.events.some(e => e.type === 'pc-state' && e.action === 'close-called' && e.stack));
+  assert.ok(h.events.some(e => e.type === 'dc-state' && e.errorDetail === 'sctp-failure' && e.sctpCauseCode === 12));
+});
+
 test('M6 uses an isolated native peer, gathers srflx and closes it', async () => {
   const h = harness(); await h.start(ice());
   assert.equal(h.peers.length, 1);
@@ -163,6 +229,11 @@ test('M6 reports TURN relay observations separately from STUN success', async ()
   const h = harness(); await h.start(ice({ url: 'turn:example.test', username: 'secret-user', credential: 'secret-password', policy: 'relay' }));
   assert.equal(h.peers[0].config.iceServers[0].credential, 'secret-password');
   assert.equal(h.events.find(e => e.type === 'ice-probe-result').expected, 'relay');
+  for (const result of h.events.filter(e => e.type.startsWith('ice-probe-'))) {
+    assert.equal(result.url, 'turn:example.test');
+    assert.equal(result.username, 'secret-user');
+    assert.equal(result.credential, 'secret-password');
+  }
   assert.equal(h.events.find(e => e.type === 'command-result').status, 'failed');
 });
 
@@ -182,6 +253,9 @@ test('M6 setup failure closes the peer and preserves full credentials in errors'
   assert.equal(h.peers[0].closed, true);
   assert.equal(h.events.find(e => e.type === 'command-result').status, 'failed');
   // Credential visibility policy: nothing is masked or redacted in telemetry.
+  const failure = h.events.find(e => e.type === 'ice-probe-error');
+  assert.equal(failure.url, 'turn:example.test');
+  assert.equal(failure.credential, 'secret-password');
   assert.ok(JSON.stringify(h.events).includes('secret-password'));
   assert.ok(JSON.stringify(h.events).includes('secret-user'));
 });
@@ -230,6 +304,22 @@ test('M3+ SDP fuzz adds codec-focused rtpmap/fmtp mutations', async () => {
   await h.start(sdpFuzz({ maxCases: 40 }));
   const labels = h.events.filter(e => e.type === 'sdp-fuzz-result').map(e => e.label);
   assert.ok(labels.some(l => l.includes('codec-')), `labels: ${labels}`);
+});
+
+test('M3+ long SDP still exercises codec and structural cases within a small budget', async () => {
+  const h = harness();
+  const peer = new h.context.RTCPeerConnection();
+  const sdp = 'v=0\r\n' + 'a=x:padding\r\n'.repeat(150) +
+    'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10\r\n';
+  await peer.setRemoteDescription({ type: 'offer', sdp });
+  await h.start(sdpFuzz({ maxCases: 10 }));
+  const results = h.events.filter(e => e.type === 'sdp-fuzz-result');
+  assert.equal(results.length, 10);
+  assert.equal(results[0].label, 'baseline-observed');
+  assert.ok(results.some(e => e.label.includes('codec-')));
+  assert.ok(results.some(e => e.label === 'empty'));
+  assert.ok(results.some(e => e.label.includes('deleted')));
+  assert.equal(h.events.find(e => e.type === 'sdp-fuzz-summary').mutations, 9);
 });
 
 test('T1 capture-stats emits a bounded snapshot for live peers', async () => {

@@ -3,6 +3,8 @@ package webrtc.ui
 import webrtc.config.ConfigStore
 import webrtc.telemetry.TelemetryTableModel
 import webrtc.workflow.RunAllController
+import webrtc.report.SecurityTestReport
+import webrtc.BuildInfo
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.io.File
@@ -34,12 +36,13 @@ class FindingsPanel(
 
     init {
         val intro = JTextArea(
-            "Findings (M7) — generate a report of the current engagement: the M0 " +
-                "configuration (including credentials, preserved in full), the findings " +
-                "from collected telemetry " +
-                "(M1/M2), and M3/M5 guidance, plus a telemetry summary. Generate it any " +
-                "time; it is passive and does not touch the target. Active-test evidence " +
-                "(M4/M6) and SDP before/after (M3) live in their own tabs and the Telemetry log. " +
+            "Findings (M7) — generate a point-form checklist for authentication, media/RTP, " +
+                "resilience, signaling protocols and other security categories, followed by " +
+                "configuration (credentials preserved in full) and results across 12 areas: SDP, ICE, " +
+                "STUN/TURN, DTLS/SRTP, DataChannels, TLS and authorization replays. " +
+                "Missing results and unsupported checks are explicit. Generate it any " +
+                "time; it is passive and does not touch the target. Linked raw evidence " +
+                "and SDP before/after are included in the report. " +
                 "Export all telemetry and authorization-matrix results to CSV for analysis."
         ).apply {
             isEditable = false; lineWrap = true; wrapStyleWord = true; isOpaque = false
@@ -119,11 +122,16 @@ class FindingsPanel(
     private fun buildReport(): String {
         val cfg = configStore.config
         val events = telemetry.snapshot()
+        val authz = authzResults.snapshot()
+        val endpoints = orchestrator.observedSignalingEndpoints()
         val sb = StringBuilder()
         sb.appendLine("# WebRTC Test Suite — findings report")
         sb.appendLine()
         sb.appendLine("Generated: ${LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)}")
+        sb.appendLine("Extension version: ${BuildInfo.version}")
         sb.appendLine()
+
+        sb.appendLine(SecurityTestReport.summaryMarkdown(SecurityTestReport.sections(cfg, events, authz, endpoints)))
 
         sb.appendLine("## Configuration (M0)")
         sb.appendLine("- Injection enabled: ${cfg.injectionEnabled}")
@@ -140,7 +148,8 @@ class FindingsPanel(
         sb.appendLine("- TURN/STUN probe: url=${cfg.iceProbe.url.ifBlank { "(none)" }} username=${cfg.iceProbe.username.ifBlank { "(none)" }} credential=${cfg.iceProbe.credential.ifBlank { "(none)" }} policy=${cfg.iceProbe.policy}")
         sb.appendLine()
 
-        sb.appendLine("## Findings & review")
+        sb.appendLine(SecurityTestReport.markdown(cfg, events, authz, endpoints, includeSummary = false))
+        sb.appendLine("## Module analysis & guidance")
         orchestrator.passiveReport(events) { line ->
             sb.appendLine(markdown(line))
         }
@@ -159,7 +168,7 @@ class FindingsPanel(
         sb.appendLine()
 
         sb.appendLine("## Scope of this report")
-        sb.appendLine("- Reachable surface: signaling-visible / WebRTC JS-API (SDP, ICE, DataChannel) + HTTP(S).")
+        sb.appendLine("- Reachable surface: signaling-visible / WebRTC JS-API (SDP, ICE, DataChannel) + HTTP(S), plus explicitly selected TLS-over-TCP listeners scanned by the integrated Python runner.")
         sb.appendLine("- Out of scope (see README): RTP/RTCP/SRTP media plane, native-parser memory-safety/RCE,")
         sb.appendLine("  signaling/SIP fuzzing, and full TURN-as-C2 relay tunnelling.")
         return sb.toString()

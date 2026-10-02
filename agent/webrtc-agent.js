@@ -14,7 +14,7 @@
   var COLLECT = CFG.collect;
   var COMMAND = CFG.command;
   var FRAME = (function () { try { return location.href; } catch (e) { return "frame"; } })();
-  var AGENT_VERSION = "1.0.1";
+  var AGENT_VERSION = "1.0.5";
   var AGENT_ID = "agent-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   var NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   var channels = new Map();
@@ -109,6 +109,11 @@
         if (statsLeft > 0) statsTimer = setTimeout(sampleStats, statsTaken < STATS_BURST ? 1000 : STATS_INTERVAL_MS);
       }
       function connectionChanged() {
+        var snapshot = peerState(pc);
+        snapshot.type = "pc-state"; snapshot.pc = pcId;
+        snapshot.detail = "peer=" + snapshot.connectionState + " ICE=" + snapshot.iceConnectionState +
+          " signaling=" + snapshot.signalingState + " SCTP=" + snapshot.sctpState;
+        beacon(snapshot);
         if (pc.connectionState === "closed" || pc.signalingState === "closed") {
           clearTimeout(statsTimer); statsTimer = null; statsLeft = 0; return;
         }
@@ -119,6 +124,16 @@
       pc.addEventListener("iceconnectionstatechange", connectionChanged);
       pc.addEventListener("connectionstatechange", connectionChanged);
       pc.addEventListener("signalingstatechange", connectionChanged);
+      var origClose = pc.close;
+      if (typeof origClose === "function") pc.close = function () {
+        var result = origClose.apply(pc, arguments);
+        var event = peerState(pc);
+        event.type = "pc-state"; event.pc = pcId; event.action = "close-called";
+        event.detail = "RTCPeerConnection.close() called by page";
+        event.stack = String(new Error().stack || "").slice(0, 2048);
+        beacon(event);
+        return result;
+      };
 
       pc.addEventListener("datachannel", function (e) {
         if (e && e.channel) wrapDataChannel(e.channel, pcId, "remote", pc);
@@ -328,16 +343,49 @@
       if (wrappedChannels.has(dc)) return;
       wrappedChannels.add(dc);
       var channelId = "dc" + (++channelSeq);
+      var createdAt = Date.now(), everOpened = dc.readyState === "open", autoRequested = false;
       channels.set(channelId, { dc: dc, pc: pc, pcId: pcId });
-      beacon({ type: "dc-created", pc: pcId, channelId: channelId, label: dc.label, detail: origin });
-      function state() {
-        beacon({ type: "dc-state", pc: pcId, channelId: channelId, label: dc.label, detail: dc.readyState });
-        heartbeat();
-        if (dc.readyState === "closed") channels.delete(channelId);
+      beacon({ type: "dc-created", pc: pcId, channelId: channelId, label: dc.label, detail: origin, state: dc.readyState });
+      function diagnostic(detail, action, error) {
+        var event = peerState(pc);
+        event.type = "dc-state"; event.pc = pcId; event.channelId = channelId; event.label = dc.label;
+        event.state = dc.readyState; event.everOpened = everOpened; event.elapsedMs = Date.now() - createdAt;
+        event.detail = detail;
+        if (action) { event.action = action; event.stack = String(new Error().stack || "").slice(0, 2048); }
+        if (error) {
+          event.error = cleanError(error); event.errorDetail = error.errorDetail;
+          event.sctpCauseCode = error.sctpCauseCode;
+        }
+        beacon(event);
       }
-      dc.addEventListener("open", state);
+      function state() {
+        if (dc.readyState === "open") everOpened = true;
+        diagnostic(dc.readyState + (dc.readyState === "closed" && !everOpened ? " before reaching open" : ""));
+        if (dc.readyState === "closed") channels.delete(channelId);
+        return heartbeat();
+      }
+      function opened() {
+        var observed = state();
+        if (autoRequested || dc.readyState !== "open") return;
+        autoRequested = true;
+        // The heartbeat must reach Burp before the fresh, scope-gated open request.
+        Promise.resolve(observed).then(function () {
+          if (unloading || dc.readyState !== "open" || activeCommand) return null;
+          return requestBridge({ autoFuzz: channelId });
+        }).then(function (doc) {
+          if (!doc || !Array.isArray(doc.commands)) return;
+          doc.commands.filter(function (c) { return c.type === "dc-fuzz" && c.channelId === channelId; }).forEach(dispatchCommand);
+        }).catch(function () {});
+      }
+      dc.addEventListener("open", opened);
       dc.addEventListener("close", state);
-      dc.addEventListener("error", function () { beacon({ type: "dc-state", pc: pcId, channelId: channelId, label: dc.label, detail: "channel error" }); });
+      dc.addEventListener("error", function (e) { diagnostic("channel error" + (e && e.error ? ": " + cleanError(e.error) : ""), null, e && e.error); });
+      var origClose = dc.close;
+      if (typeof origClose === "function") dc.close = function () {
+        var result = origClose.apply(dc, arguments);
+        diagnostic("RTCDataChannel.close() called by page", "close-called");
+        return result;
+      };
       var origSend = dc.send;
       dc.send = function (data) {
         var result = origSend.apply(dc, arguments);
@@ -348,8 +396,15 @@
         beacon({ type: "dc-recv", pc: pcId, channelId: channelId, label: dc.label, bytes: sizeOf(e && e.data),
           preview: typeof (e && e.data) === "string" ? e.data.slice(0, 512) : "[binary]" });
       });
-      heartbeat();
+      if (dc.readyState === "open") opened();
+      else if (dc.readyState === "closed") state();
+      else heartbeat();
     } catch (e) {}
+  }
+
+  function peerState(pc) {
+    return { connectionState: pc.connectionState || "unknown", iceConnectionState: pc.iceConnectionState || "unknown",
+      signalingState: pc.signalingState || "unknown", sctpState: pc.sctp && pc.sctp.state || "unknown" };
   }
 
   function rememberSdp(desc) {
@@ -576,7 +631,8 @@
         : command.type === "capture-stats" ? "stats-capture-error"
         : command.type === "signaling-flood" ? "signaling-flood-error"
         : "ice-probe-error";
-      beacon({ type: errType, commandId: command.id, detail: cleanError(e) });
+      var errorEvent = { type: errType, commandId: command.id, detail: cleanError(e) };
+      if (errType === "ice-probe-error") iceProbeEvent(command, errorEvent); else beacon(errorEvent);
       return "failed";
     }).then(function (status) {
       completedCommands.push({ commandId: command.id, status: status });
@@ -645,6 +701,15 @@
     return errors ? "failed" : "completed";
   }
 
+  function iceProbeEvent(command, event) {
+    var cfg = command.config || {};
+    // Preserve the actual run inputs, not the current UI configuration, for comparison.
+    event.url = cfg.url || "";
+    event.username = cfg.username || "";
+    event.credential = cfg.credential || "";
+    beacon(event);
+  }
+
   async function runIceProbe(command) {
     var cfg = command.config;
     if (!cfg || ["all", "relay"].indexOf(cfg.policy) < 0 || !Number.isInteger(cfg.timeoutSeconds) || cfg.timeoutSeconds < 3 || cfg.timeoutSeconds > 30) throw new Error("Invalid ICE probe settings");
@@ -667,14 +732,14 @@
         var candidate = e.candidate;
         var type = candidate.type || (candidate.candidate.match(/ typ (\w+)/) || [])[1] || "unknown";
         counts[type] = (counts[type] || 0) + 1;
-        beacon({ type: "ice-probe-candidate", commandId: command.id, candidate: candidate.candidate,
+        iceProbeEvent(command, { type: "ice-probe-candidate", commandId: command.id, candidate: candidate.candidate,
           candidateType: type, protocol: candidate.protocol, address: candidate.address, port: candidate.port,
           elapsedMs: Date.now() - started, private: isPrivate(candidate.candidate), detail: type + " " + candidate.candidate });
       });
       pc.addEventListener("icecandidateerror", function (e) {
         if (settled) return;
         errors++;
-        beacon({ type: "ice-probe-error", commandId: command.id, errorCode: e.errorCode,
+        iceProbeEvent(command, { type: "ice-probe-error", commandId: command.id, errorCode: e.errorCode,
           detail: cleanError({ name: "ICE " + e.errorCode, message: e.errorText || "Candidate gathering error" }) });
       });
       timer = setTimeout(function () { finish("timeout"); }, cfg.timeoutSeconds * 1000);
@@ -687,7 +752,7 @@
       var reason = await Promise.race([setup, done]);
       var expected = cfg.url ? (/^turns?:/i.test(cfg.url) ? "relay" : "srflx") : "host";
       var observed = counts[expected] > 0;
-      beacon({ type: "ice-probe-result", commandId: command.id, reason: reason, counts: counts, errors: errors,
+      iceProbeEvent(command, { type: "ice-probe-result", commandId: command.id, reason: reason, counts: counts, errors: errors,
         expected: expected, observed: observed, elapsedMs: Date.now() - started,
         detail: reason + ": " + expected + (observed ? " candidate observed" : " candidate not observed") });
       return reason === "cancelled" ? "cancelled" : (observed ? "completed" : "failed");
@@ -799,7 +864,6 @@
         changedLine(index, "a=fmtp:127 " + "x=1;".repeat(512) + "x=1", "codec-fmtp-long-params", 6);
       }
     });
-    perMutation.forEach(function (group) { Array.prototype.push.apply(cases, group); });
     var firstMedia = (base.match(/^m=.*$/m) || ["m=application 9 UDP/DTLS/SCTP webrtc-datachannel"])[0];
     cases.push(
       { label: "empty", sdp: "" },
@@ -824,6 +888,17 @@
       { label: "codec-rtpmap-long-codec", sdp: base.replace(/^a=rtpmap:.*$/m, "a=rtpmap:111 " + "A".repeat(4096) + "/0/0") },
       { label: "duplicate-critical", sdp: base + "\r\n" + base }
     );
+    // Sample mutation families before exhausting the cap on long real-call SDP.
+    // The baseline remains first; codec, structural and per-line cases all get a turn.
+    var structural = cases.splice(1);
+    var groups = [perMutation[0], perMutation[6], structural].concat(perMutation.slice(1, 6));
+    var remaining = true;
+    for (var offset = 0; remaining; offset++) {
+      remaining = false;
+      groups.forEach(function (group) {
+        if (offset < group.length) { cases.push(group[offset]); remaining = true; }
+      });
+    }
     return cases;
   }
 

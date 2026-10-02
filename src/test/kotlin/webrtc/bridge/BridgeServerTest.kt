@@ -2,6 +2,7 @@ package webrtc.bridge
 
 import burp.api.montoya.MontoyaApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import webrtc.config.ConfigStore
@@ -256,6 +257,18 @@ class BridgeServerTest {
             assertTrue(controller.cancelJob(id))
             assertEquals("false", get("agent=page-a&authorize=$id")["authorized"]?.jsonPrimitive?.content)
             assertFalse(controller.cancelJob(id))
+            assertEquals("[]", get("agent=page-a&autoFuzz=dc1")["commands"].toString())
+            controller.armNextOpenFuzz(DataChannelFuzzConfig(payload = "on open"))
+            assertEquals("[]", get("agent=other&autoFuzz=dc1")["commands"].toString())
+            val immediate = get("agent=page-a&autoFuzz=dc1")["commands"]!!.jsonArray.single().jsonObject
+            assertEquals("dc-fuzz", immediate["type"]!!.jsonPrimitive.content)
+            assertEquals("on open", immediate["config"]!!.jsonObject["payload"]!!.jsonPrimitive.content)
+            assertEquals("[]", get("agent=page-a&autoFuzz=dc1")["commands"].toString())
+            assertFalse(controller.nextOpenFuzzArmed())
+            val automaticId = immediate["id"]!!.jsonPrimitive.content
+            assertEquals("true", get("agent=page-a&authorize=$automaticId")["authorized"]!!.jsonPrimitive.content)
+            controller.disarmNextOpenFuzz()
+            assertEquals("false", get("agent=page-a&authorize=$automaticId")["authorized"]!!.jsonPrimitive.content)
             assertTrue(errors.isEmpty(), errors.toString())
         } finally { bridge.stop() }
     }

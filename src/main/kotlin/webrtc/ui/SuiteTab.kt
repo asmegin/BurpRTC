@@ -8,6 +8,7 @@ import webrtc.config.ConfigStore
 import webrtc.telemetry.TelemetryTableModel
 import webrtc.workflow.RunAllController
 import webrtc.workflow.SignalingMetadata
+import webrtc.tls.TlsScanRunner
 import javax.swing.JTabbedPane
 import javax.swing.SwingUtilities
 
@@ -18,15 +19,16 @@ class SuiteTab(
     telemetry: TelemetryTableModel,
     private val runner: AuthzMatrixRunner,
     activeTests: ActiveTestController,
+    tlsRunner: TlsScanRunner,
     onConfigSaved: () -> Unit
 ) : JTabbedPane() {
 
     private val authzPanel = AuthzPanel(api)
 
     init {
-        val orchestrator = RunAllController(configStore, activeTests, telemetry) {
+        val orchestrator = RunAllController(configStore, activeTests, telemetry, tlsRunner, signalingEndpoints = {
             SignalingMetadata.collectFromProxy(api, configStore.config.hostAllowList)
-        }
+        }, authzResults = { authzPanel.model.snapshot() })
         addTab("Run All", RunAllPanel(orchestrator))
         addTab("Config (M0)", ConfigPanel(api, configStore, onConfigSaved))
         addTab("Telemetry (M2)", TelemetryPanel(telemetry, activeTests))
@@ -37,6 +39,7 @@ class SuiteTab(
         addTab("TURN/STUN (M6)", IceProbePanel(configStore, activeTests, telemetry))
         addTab("Signaling Flood (T8)", SignalingFloodPanel(configStore, activeTests, telemetry))
         addTab("External Tests", ExternalTestsPanel(configStore, telemetry))
+        addTab("TLS Tests", TlsScanPanel(configStore, telemetry, tlsRunner))
         addTab("Findings (M7)", FindingsPanel(orchestrator, configStore, telemetry, authzPanel.model))
     }
 

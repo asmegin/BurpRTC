@@ -2,6 +2,8 @@
 build/
 .gradle/
 .kotlin/
+__pycache__/
+*.pyc
 
 # Local contributor notes — not published to the repository
 AGENTS.md

@@ -2,6 +2,7 @@ package webrtc.workflow
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -15,6 +16,10 @@ import webrtc.telemetry.CertificateAnalyzer
 import webrtc.telemetry.StatsSnapshot
 import webrtc.telemetry.TelemetryEvent
 import webrtc.telemetry.TelemetryTableModel
+import webrtc.tls.TlsScanRunner
+import webrtc.authz.AuthzResult
+import webrtc.report.SecurityTestReport
+import webrtc.report.CoverageSupport
 
 /**
  * The beginner-friendly "Run all" orchestration. It runs the checks that can be
@@ -32,6 +37,8 @@ class RunAllController(
     private val configStore: ConfigStore,
     private val controller: ActiveTestController,
     private val telemetry: TelemetryTableModel,
+    private val tlsRunner: TlsScanRunner? = null,
+    private val authzResults: () -> List<AuthzResult> = { emptyList() },
     private val signalingEndpoints: () -> List<SignalingMetadata.Endpoint> = { emptyList() }
 ) {
     /** One line of the run report, tagged so the UI can format it. */
@@ -41,7 +48,10 @@ class RunAllController(
     @Volatile private var cancelled = false
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun requestStop() { cancelled = true }
+    /** Already-captured metadata for the report; never queues a request. */
+    fun observedSignalingEndpoints(): List<SignalingMetadata.Endpoint> = runCatching { signalingEndpoints() }.getOrDefault(emptyList())
+
+    fun requestStop() { cancelled = true; tlsRunner?.stop() }
     fun reset() { cancelled = false }
 
     /** Runs the whole sequence, emitting report lines through [emit]. Call off the EDT. */
@@ -128,6 +138,14 @@ class RunAllController(
             }
         }
 
+        emit(Line(Level.HEAD, "3b. TLS listener tests (Python / SSLyze)"))
+        if (!cancelled && cfg.tlsScan.includeInRunAll && tlsRunner != null) {
+            val firstSeq = telemetry.snapshot().maxOfOrNull { it.seq } ?: 0
+            val result = tlsRunner.scan(cfg.tlsScan) { cancelled }
+            emit(Line(if (result.status == "completed") Level.INFO else Level.WARN, result.detail))
+            reviewTls(telemetry.snapshot().filter { it.seq > firstSeq }, emit)
+        } else emit(Line(Level.SKIP, "TLS scans are opt-in. Select an endpoint and enable inclusion in Run All in TLS Tests."))
+
         emit(Line(Level.HEAD, "4. SDP mutation (M3)"))
         if (cfg.sdpMutation.enabled) {
             emit(Line(Level.INFO, "M3 is enabled and will rewrite the next negotiation. Start a fresh call/renegotiation in the browser, then check SDP Mutation (M3) for before/after evidence."))
@@ -139,6 +157,19 @@ class RunAllController(
         val identities = runCatching { configStore.config.identities }.getOrDefault(emptyList())
         emit(authzGuidance(identities))
         reviewIdentifiers(emit)
+
+        emit(Line(Level.HEAD, "Security checklist coverage"))
+        val sections = SecurityTestReport.sections(cfg, telemetry.snapshot(), authzResults(), observedSignalingEndpoints())
+        SecurityTestReport.checklist(sections).forEach { summary ->
+            val level = when {
+                summary.results.any { it.status == SecurityTestReport.Status.FINDING } -> Level.FINDING
+                summary.results.any { it.status in setOf(SecurityTestReport.Status.REVIEW, SecurityTestReport.Status.ERROR, SecurityTestReport.Status.PARTIAL) } -> Level.WARN
+                summary.check.support == CoverageSupport.EXTERNAL -> Level.SKIP
+                summary.results.all { it.status == SecurityTestReport.Status.NOT_TESTED } -> Level.SKIP
+                else -> Level.INFO
+            }
+            emit(Line(level, SecurityTestReport.summaryText(summary)))
+        }
 
         emit(Line(Level.HEAD, "Summary"))
         emit(Line(if (configReady) Level.OK else Level.WARN,
@@ -207,6 +238,7 @@ class RunAllController(
         else emit(Line(Level.WARN, "No 'installed' beacon seen — the agent may not be loading. Check injection and CSP settings."))
 
         reviewPrivacy(events, emit)
+        reviewTls(events, emit)
 
         val sdp = (byType["sdp-local"] ?: 0) + (byType["sdp-remote"] ?: 0)
         if (sdp > 0) emit(Line(Level.INFO, "Observed $sdp SDP offer/answer message(s)."))
@@ -254,6 +286,25 @@ class RunAllController(
         reviewStats(events, sdpTexts, emit)
 
         (byType["dc-created"] ?: 0).let { if (it > 0) emit(Line(Level.INFO, "Observed $it DataChannel(s) — candidates for M4 fuzzing.")) }
+        events.filter { it.type == "dc-state" && field(it, "state") == "closed" }
+            .distinctBy { listOf(field(it, "agent"), it.frame, it.pcId, field(it, "channelId")) }.forEach { event ->
+                val channel = field(event, "channelId").orEmpty()
+                val lifetime = field(event, "elapsedMs")?.let { " after ${it}ms" }.orEmpty()
+                val states = "peer=${field(event, "connectionState")} ICE=${field(event, "iceConnectionState")} signaling=${field(event, "signalingState")} SCTP=${field(event, "sctpState")}"
+                when (field(event, "everOpened")) {
+                    "false" -> emit(Line(Level.WARN, "DataChannel ${event.pcId}/$channel closed before reaching open$lifetime ($states). Local creation is not an open channel; M4 cannot send until open. Review SDP errors, ICE/DTLS states and close() call telemetry."))
+                    "true" -> emit(Line(Level.INFO, "DataChannel ${event.pcId}/$channel opened, then closed$lifetime ($states)."))
+                }
+            }
+        events.filter { it.type == "pc-state" }
+            .groupBy { listOf(field(it, "agent"), it.frame, it.pcId) }.values.forEach { history ->
+                val latest = history.maxByOrNull { it.seq }!!
+                emit(Line(Level.INFO, "Peer ${latest.pcId}: connection=${field(latest, "connectionState")}, ICE=${field(latest, "iceConnectionState")}, signaling=${field(latest, "signalingState")}, SCTP=${field(latest, "sctpState")}."))
+                if (history.any { field(it, "connectionState") == "failed" || field(it, "iceConnectionState") == "failed" })
+                    emit(Line(Level.WARN, "Peer ${latest.pcId} reported an ICE or connection failure. This is a connectivity diagnostic, not a vulnerability."))
+                if (history.any { field(it, "action") == "close-called" })
+                    emit(Line(Level.INFO, "Peer ${latest.pcId}: the page called RTCPeerConnection.close(); inspect the pc-state stack for the caller."))
+            }
         (byType["getUserMedia"] ?: 0).let { if (it > 0) emit(Line(Level.INFO, "Observed $it getUserMedia (camera/mic) request(s).")) }
         events.filter { it.type == "getUserMedia-result" }.forEach { result ->
             val error = field(result, "error")
@@ -321,6 +372,30 @@ class RunAllController(
      * (type "ice") are parsed; probe candidates and import records are excluded.
      * A public address is the meaningful exposure; mDNS names conceal the address.
      */
+    private fun reviewTls(events: List<TelemetryEvent>, emit: (Line) -> Unit) {
+        val scans = events.filter { it.type in setOf("tls-scan-result", "tls-scan-error") }
+        for (event in scans) {
+            val obj = runCatching { json.parseToJsonElement(event.raw).jsonObject }.getOrNull()
+            val result = obj?.get("result") as? JsonObject
+            fun value(obj: JsonObject?, name: String) = (obj?.get(name) as? JsonPrimitive)?.contentOrNull
+            val status = value(result, "status") ?: "failed"
+            val target = value(obj, "target") ?: event.frame
+            emit(Line(if (status == "completed") Level.INFO else Level.WARN, "TLS $target: $status. ${event.summary}"))
+            (result?.get("checks") as? JsonArray)?.forEach { element ->
+                val check = element as? JsonObject ?: return@forEach
+                emit(Line(if (value(check, "status") == "completed") Level.INFO else Level.WARN,
+                    "TLS $target: ${value(check, "summary") ?: value(check, "name")}."))
+            }
+            (result?.get("findings") as? JsonArray)?.forEach { element ->
+                val finding = element as? JsonObject ?: return@forEach
+                emit(Line(if (value(finding, "level") == "finding") Level.FINDING else Level.WARN,
+                    "TLS $target: ${value(finding, "text") ?: "Inspect scanner evidence"}."))
+            }
+        }
+        if (scans.isNotEmpty()) emit(Line(Level.INFO,
+            "TLS results cover the selected TCP listener; they do not test TURN authentication/allocation, media DTLS or SRTP. Complete means the scanner completed, not that the listener is secure. Full SSLyze evidence is in TLS Tests / telemetry."))
+    }
+
     private fun reviewPrivacy(events: List<TelemetryEvent>, emit: (Line) -> Unit) {
         val candidates = events.filter { it.type == "ice" }.mapNotNull { field(it, "candidate") }
             .mapNotNull { Detectors.parseCandidate(it) }
@@ -442,7 +517,7 @@ class RunAllController(
      * request is made; only origins and HSTS presence are reported.
      */
     private fun reviewSignaling(emit: (Line) -> Unit) {
-        val endpoints = runCatching { signalingEndpoints() }.getOrDefault(emptyList())
+        val endpoints = observedSignalingEndpoints()
         if (endpoints.isEmpty()) {
             emit(Line(Level.SKIP, "No HTTP(S) signaling origins observed in Burp Proxy history yet. Browse the app through Burp; this is a passive read only."))
             return

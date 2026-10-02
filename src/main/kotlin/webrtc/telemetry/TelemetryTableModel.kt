@@ -19,14 +19,15 @@ data class TelemetryEvent(
 /** Known agent event types (informational; the table accepts any type string). */
 object EventTypes {
     val KNOWN = listOf(
-        "installed", "pc-new", "ice", "crypto", "selected-pair",
+        "installed", "pc-new", "pc-state", "ice", "crypto", "selected-pair",
         "sdp-local", "sdp-remote", "dc-created", "dc-send", "dc-recv",
         "getUserMedia", "fuzz-result", "fuzz-error", "sdp-mutation", "sdp-result", "sdp-error", "sdp-mutation-status",
         "dc-state", "test-job", "command-result", "ice-probe-candidate", "ice-probe-error", "ice-probe-result",
         "sdp-fuzz-result", "sdp-fuzz-error", "sdp-fuzz-summary",
         "stats-snapshot", "dtls-cert", "stats-capture-result", "stats-capture-error",
         "flood-result", "signaling-flood-summary", "signaling-flood-error",
-        "internals-import", "internals-comparison"
+        "internals-import", "internals-comparison",
+        "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error"
     )
 }
 

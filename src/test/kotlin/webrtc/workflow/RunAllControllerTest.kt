@@ -13,6 +13,45 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class RunAllControllerTest {
+    @Test fun `run all emits every checklist item and shares authorization evidence`() {
+        val store = freshStore()
+        val telemetry = TelemetryTableModel()
+        val controller = ActiveTestController(store, { true }, telemetry)
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, controller, telemetry, authzResults = {
+            listOf(webrtc.authz.AuthzResult("https://example.test/api", "unauth", 200, 10, "hash", true, true, "test", null))
+        }).run { lines += it }
+        webrtc.report.CoverageCheck.entries.forEach { check ->
+            assertTrue(lines.any { it.text.startsWith("${check.title} — ") }, check.title)
+        }
+        assertTrue(lines.any { it.text.startsWith("Signaling authentication tests — ") && it.level == RunAllController.Level.WARN && it.text.contains("Review required") })
+        assertTrue(lines.any { it.text.startsWith("RTP packet fuzzing — ") && it.level == RunAllController.Level.SKIP })
+    }
+    @Test fun `TLS report includes positive findings and incomplete checks without claiming secure`() {
+        val store = freshStore()
+        val telemetry = TelemetryTableModel()
+        telemetry.add(rawEvent("tls-scan-result", """{"target":"turns:example.test:5349","result":{"status":"partial","checks":[{"name":"robot","status":"error","summary":"ROBOT timed out"}],"findings":[{"level":"finding","text":"TLS 1.0 accepted"}]}}"""))
+        telemetry.add(rawEvent("tls-scan-error", """{"target":"https://example.test","result":{"status":"cancelled","error":"stopped"}}"""))
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry).passiveReport { lines.add(it) }
+        assertTrue(lines.any { it.level == RunAllController.Level.FINDING && it.text.contains("TLS 1.0 accepted") })
+        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("ROBOT timed out") })
+        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("cancelled") })
+        assertTrue(lines.any { it.text.contains("media DTLS or SRTP") })
+        assertFalse(lines.any { it.level == RunAllController.Level.OK && it.text.contains("TLS") })
+    }
+    @Test fun `passive report explains unopened channels and peer failures without inventing a vulnerability`() {
+        val store = freshStore()
+        val telemetry = TelemetryTableModel()
+        telemetry.add(rawEvent("dc-state", """{"agent":"a","channelId":"dc1","state":"closed","everOpened":false,"elapsedMs":159,"connectionState":"failed","iceConnectionState":"failed","signalingState":"stable","sctpState":"closed"}""").copy(pcId = "pc1"))
+        telemetry.add(rawEvent("pc-state", """{"agent":"a","connectionState":"failed","iceConnectionState":"failed","signalingState":"closed","sctpState":"closed","action":"close-called"}""").copy(pcId = "pc1"))
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry).passiveReport { lines.add(it) }
+        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("closed before reaching open after 159ms") })
+        assertTrue(lines.any { it.level == RunAllController.Level.WARN && it.text.contains("ICE or connection failure") })
+        assertTrue(lines.any { it.text.contains("page called RTCPeerConnection.close()") })
+        assertFalse(lines.any { it.level == RunAllController.Level.FINDING })
+    }
     private var persisted: String? = null
     private fun api(): MontoyaApi {
         fun proxy(type: Class<*>): Any = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->

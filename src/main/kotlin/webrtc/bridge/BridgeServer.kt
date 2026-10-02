@@ -90,6 +90,11 @@ class BridgeServer(
                 if (request.method == "GET" && parameter("poll") == "1") {
                     activeTests.commands(agent, frame).forEach { add(it) }
                 }
+                if (allowed) parameter("autoFuzz")?.let { channel ->
+                    activeTests.queueNextOpenFuzz(agent, frame, channel)?.let { id ->
+                        activeTests.commands(agent, frame).filter { it["id"]?.jsonPrimitive?.content == id }.forEach { add(it) }
+                    }
+                }
             })
             put("authorized", request.method == "GET" && parameter("authorize")?.let {
                 activeTests.authorize(agent, frame, it)
@@ -138,6 +143,8 @@ class BridgeServer(
         "crypto", "selected-pair" -> obj.strOr("detail", obj.strOr("cipher", ""))
         "sdp-local", "sdp-remote" -> "sdp ${obj.strOr("sdp", "").length} bytes"
         "dc-send", "dc-recv" -> "${obj.strOr("label", "")} ${obj.strOr("bytes", "")}B"
+        "dc-created" -> "${obj.strOr("label", "")} ${obj.strOr("detail", "")} (${obj.strOr("state", "unknown")})"
+        "dc-state", "pc-state", "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error" -> obj.strOr("detail", "")
         "getUserMedia" -> obj.strOr("constraints", "")
         "stats-snapshot" -> {
             val rtp = (obj["rtp"] as? kotlinx.serialization.json.JsonArray)?.size ?: 0

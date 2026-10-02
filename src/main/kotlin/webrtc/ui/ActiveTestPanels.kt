@@ -51,11 +51,14 @@ class DataChannelFuzzPanel(
     private val interval = JSpinner(SpinnerNumberModel(250, 100, 1000, 50))
     private val maxBytes = JSpinner(SpinnerNumberModel(4096, 1, 65536, 1))
     private val stopOnError = JCheckBox("Stop on first send error", true)
+    private val nextOpen = JCheckBox("Run on next DataChannel open (once, this session)")
+    private var updatingArm = false
+    private var lastAutomaticJob: String? = null
     private val status = JLabel("Start a DataChannel in the browser, then refresh the list.")
     private var currentJob: String? = null
 
     init {
-        followJobStatus(telemetry, status) { currentJob }
+        followJobStatus(telemetry, status) { currentJob ?: controller.automaticFuzzJob() }
         val saved = store.config.dataChannelFuzz
         mode.selectedIndex = modes.indexOf(saved.mode).coerceAtLeast(0)
         payload.text = saved.payload; count.value = saved.count; interval.value = saved.intervalMs
@@ -91,6 +94,11 @@ class DataChannelFuzzPanel(
                 "Stop on first send error",
                 "When on, the run halts as soon as a send fails (for example the channel closed). When off, it keeps trying the remaining messages. A send succeeding only means the local browser accepted it for sending — it does not prove the remote peer processed it."
             ))
+            field("", nextOpen, HelpUi.button(
+                "Run on next DataChannel open",
+                "Arm one automatic M4 run using the settings currently shown. The next channel that actually reaches open on any allow-listed, in-scope page requests the run immediately, without waiting for the three-second poll. Local means created locally, not open. Channels that close while connecting cannot send test messages.",
+                "Set the payload and limits, tick this option, then start a fresh call. It disarms after one run is queued. A busy page leaves it armed for another open event. Uncheck or press Stop to disarm and cancel the automatic run. Reload the browser page after updating the extension."
+            ))
             field("", JLabel("Each run is limited to 1 MiB. Send acceptance does not prove peer processing."))
         }
         val controls = JPanel(BorderLayout()).apply {
@@ -99,29 +107,61 @@ class DataChannelFuzzPanel(
                 add(JButton("Refresh channels").apply { addActionListener { refresh() } })
                 add(JButton("Run").apply { addActionListener { runTest() } })
                 add(JButton("Stop").apply { addActionListener {
-                    status.text = if (controller.cancelJob(currentJob.orEmpty())) "Stop requested" else "No active test from this panel"
+                    controller.disarmNextOpenFuzz()
+                    controller.cancelJob(currentJob.orEmpty())
+                    refresh()
+                    status.text = "Automatic run disarmed; stop requested for any current test"
                 } })
                 add(status)
             }, BorderLayout.SOUTH)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), TestResultsPanel(telemetry, "fuzz-.*|dc-(created|state|send|recv)", "dc-fuzz")).apply { resizeWeight = 0.4 })
+        nextOpen.addActionListener {
+            if (!updatingArm) try {
+                if (nextOpen.isSelected) {
+                    val cfg = settings()
+                    cfg.validate()
+                    store.save(store.config.copy(dataChannelFuzz = cfg))
+                    controller.armNextOpenFuzz(cfg)
+                    status.text = "Armed for the next open channel on an in-scope page"
+                } else {
+                    controller.disarmNextOpenFuzz()
+                    status.text = "Automatic run disarmed"
+                }
+            } catch (e: Exception) {
+                controller.disarmNextOpenFuzz()
+                nextOpen.isSelected = false
+                JOptionPane.showMessageDialog(this, e.message, "DataChannel test", JOptionPane.ERROR_MESSAGE)
+            }
+        }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), TestResultsPanel(telemetry, "fuzz-.*|pc-state|sdp-error|dc-(created|state|send|recv)", "dc-fuzz")).apply { resizeWeight = 0.4 })
         Timer(2000) { refresh() }.apply { isRepeats = true; start() }
     }
 
     private fun refresh() {
+        updatingArm = true
+        nextOpen.isSelected = controller.nextOpenFuzzArmed()
+        updatingArm = false
+        controller.automaticFuzzJob()?.let { id ->
+            if (id != lastAutomaticJob) { lastAutomaticJob = id; currentJob = id }
+            if (currentJob == id) status.text = "Automatic dc-fuzz ${id.take(8)} ${controller.jobState(id).orEmpty()}"
+        }
         val previous = target.selectedItem as? Target
         target.removeAllItems()
         controller.agents().forEach { agent -> agent.channels.filter { it.state == "open" }.forEach { channel ->
             target.addItem(Target(agent.id, channel.id, "${agent.id.takeLast(8)} ${channel.pc}/${channel.id} ${channel.label} | ${agent.frame}"))
         } }
         (0 until target.itemCount).firstOrNull { target.getItemAt(it).let { item -> item.agent == previous?.agent && item.channel == previous?.channel } }?.let { target.selectedIndex = it }
-        if (currentJob == null) status.text = "${target.itemCount} open channel(s) · updating automatically"
+        if (controller.nextOpenFuzzArmed()) status.text = "Armed for the next open channel · ${target.itemCount} open now"
+        else if (currentJob == null) status.text = "${target.itemCount} open channel(s) · local creation does not mean open"
     }
+
+    private fun settings() = DataChannelFuzzConfig(modes[mode.selectedIndex], payload.text, count.value as Int,
+        interval.value as Int, maxBytes.value as Int, stopOnError.isSelected)
 
     private fun runTest() {
         try {
             val selected = target.selectedItem as? Target ?: error("Refresh and select an open DataChannel")
-            val cfg = DataChannelFuzzConfig(modes[mode.selectedIndex], payload.text, count.value as Int, interval.value as Int, maxBytes.value as Int, stopOnError.isSelected)
+            val cfg = settings()
             cfg.validate()
             store.save(store.config.copy(dataChannelFuzz = cfg))
             val id = controller.queueFuzz(selected.agent, selected.channel, cfg)
