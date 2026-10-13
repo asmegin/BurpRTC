@@ -2,27 +2,34 @@ package webrtc.config
 
 import kotlinx.serialization.Serializable
 
-enum class ScanModule(val id: String, val title: String) {
-    PASSIVE("passive", "Passive SDP / ICE / DTLS / SRTP / codec review"),
-    STATS("stats", "Capture live transport / media statistics"),
-    ICE("ice", "Browser STUN / TURN gather (M6)"),
-    SDP("sdp", "SDP / codec-parameter fuzzing (M3+)"),
-    MUTATION("mutation", "SDP mutation rules (M3, next negotiation)"),
-    DATA("data", "DataChannel payload fuzzing (M4)"),
-    AUTHZ("authz", "HTTP authentication / IDOR (recent captured GET/HEAD requests)"),
-    TLS("tls", "TLS versions / ciphers / certificates (SSLyze)"),
-    STUN("stun", "Direct STUN binding / server discovery"),
-    TURN("turn", "Direct TURN authentication / allocation / relay restrictions"),
-    WS("ws", "WebSocket authentication / Origin / message probes"),
-    SIP("sip", "SIP OPTIONS over UDP / TCP / TLS / WebSocket"),
-    DTLS("dtls", "Direct DTLS handshake / certificate / cipher"),
-    RTP("rtp", "RTP / RTCP packet probes (explicit media listener required)"),
-    FUZZ("protocol-fuzz", "Bounded signaling / RTP packet mutations"),
-    LOAD("protocol-load", "Bounded API / signaling / RTP load probes"),
-    LOCAL_FLOOD("local-flood", "Local browser renegotiation / ICE-restart loop (T8)")
+/** Every entry has an extension execution path. External recipes belong in External Tests. */
+enum class ScanModule(val id: String, val title: String, val detail: String) {
+    PASSIVE("passive", "Evidence review", "Review captured SDP, ICE privacy, DTLS/SRTP, codecs and signaling metadata."),
+    STATS("stats", "Live statistics", "Capture transport and media statistics from live browser peers."),
+    BROWSER("browser", "Browser & capture checks", "Record camera, microphone and screen-share permission states, permission policy and device-label exposure in each live page."),
+    ICE("ice", "STUN & TURN gathering", "Gather candidates using saved or observed ICE servers; needs a live browser page."),
+    SDP("sdp", "SDP / codec fuzzing", "Run bounded parser mutations on a throwaway browser peer."),
+    MUTATION("mutation", "SDP rules", "Enable saved rewrite rules for the next negotiation; needs a rule and a fresh call."),
+    DATA("data", "Data channel fuzzing", "Send bounded test payloads; needs an open data channel."),
+    AUTHZ("authz", "Access control", "Replay recent GET/HEAD requests across selected captured sessions or configured identities, including removal of recognized header, URL and body credentials. Customer / advisor roles turn matching responses into likely violations."),
+    INVITES("invites", "Meeting links", "Replay captured meeting / invite link validation requests with the token altered, removed and without cookies, and estimate token guessability."),
+    ARTIFACTS("artifacts", "Documents & recordings", "Replay captured document, file and recording downloads across sessions and without credentials; review signed-link expiry and neighbouring numeric IDs."),
+    TLS("tls", "TLS listener tests", "Scan the endpoint saved in TLS tests with the built-in JVM scanner (no install), or SSLyze when selected."),
+    SECURITY("security", "Security checks", "Run captured-evidence checks, built-in STUN/TURN tests and any saved HTTP/WebSocket scenarios."),
+    LOCAL_FLOOD("local-flood", "Negotiation loop", "Run a bounded ICE-restart loop on a throwaway peer; sends no server signaling.")
 }
 
 @Serializable
-data class ScanPlan(val enabled: Set<String> = setOf("passive", "stats", "ice", "sdp", "data")) {
+data class ScanPlan(
+    val enabled: Set<String> = ScanModule.entries.map { it.id }.toSet(),
+    val selectionVersion: Int = CURRENT_VERSION
+) {
+    companion object {
+        const val CURRENT_VERSION = 3
+        /** Modules added after selection version 2; existing non-empty selections gain them once. */
+        val ADDED_IN_V3 = setOf(ScanModule.BROWSER.id, ScanModule.INVITES.id, ScanModule.ARTIFACTS.id)
+    }
     fun includes(module: ScanModule) = module.id in enabled
+    fun with(module: ScanModule, selected: Boolean) = copy(enabled =
+        if (selected) enabled + module.id else enabled - module.id)
 }

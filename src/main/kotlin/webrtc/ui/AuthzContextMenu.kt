@@ -8,7 +8,8 @@ import javax.swing.JMenuItem
 
 /** Right-click -> "WebRTC: Run authz matrix" on any request(s). */
 class AuthzContextMenu(
-    private val onRun: (List<HttpRequestResponse>) -> Unit
+    private val onRun: (List<HttpRequestResponse>) -> Unit,
+    private val onStage: ((List<HttpRequestResponse>) -> Unit)? = null
 ) : ContextMenuItemsProvider {
 
     override fun provideMenuItems(event: ContextMenuEvent): List<Component> {
@@ -16,7 +17,10 @@ class AuthzContextMenu(
         if (selected.isEmpty()) return emptyList()
         val item = JMenuItem("WebRTC: Run authz matrix (${selected.size})")
         item.addActionListener { onRun(selected) }
-        return listOf(item)
+        val stage = onStage?.let { callback -> JMenuItem("WebRTC: Send to Access control (${selected.size})").apply {
+            addActionListener { callback(selected) }
+        } }
+        return listOfNotNull(stage, item)
     }
 
     private fun collect(event: ContextMenuEvent): List<HttpRequestResponse> {

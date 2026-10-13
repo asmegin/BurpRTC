@@ -13,21 +13,42 @@ object TestRegistry {
         javaClass.getResourceAsStream("/assessment/catalog.json")!!.bufferedReader().use { it.readText() })
     val byId = definitions.associateBy { it.id }
     val protocolTests = setOf("TRN-01", "TRN-02", "TRN-04", "TRN-05", "TRN-07")
-    val passiveTests = setOf("COR-01", "COR-02", "COR-03", "COR-04", "COR-05", "SIG-01", "WEB-01")
+    val passiveTests = setOf("COR-01", "COR-02", "COR-03", "COR-04", "COR-05", "SIG-01", "WEB-01", "WEB-02", "WEB-03")
+    // Checks needing only captured observations / discovered ICE listeners. Forwarding
+    // checks use a second allocation as the peer when no echo destination is supplied.
+    val automaticProtocolTests = setOf("TRN-01", "TRN-02", "TRN-04", "TRN-05", "TRN-07")
+    val automaticTests: Set<String> = definitions.map { it.id }.filter { it in passiveTests || it in automaticProtocolTests }.toSet()
     val scenarioTests = definitions.filter { it.id.startsWith("SIG-") || it.id.startsWith("APP-") || it.id.startsWith("SFU-") ||
-        it.id in setOf("TRN-03", "DCH-02", "WEB-03", "RES-01", "RES-03", "ICE-01", "ICE-05", "SDP-02", "SDP-03", "DTL-03", "MED-02", "SIP-02", "SIP-04") }.map { it.id }.toSet() - setOf("SIG-01", "APP-04")
+        it.id in setOf("TRN-03", "DCH-02", "WEB-03", "RES-01", "RES-03", "ICE-01", "ICE-05", "SDP-02", "SDP-03", "DTL-03", "MED-02", "SIP-02", "SIP-04") }.map { it.id }.toSet() - setOf("SIG-01", "APP-04", "WEB-03")
     fun capability(id: String, config: AssessmentConfig): String = when {
         id in passiveTests -> "Passive analysis"
-        id in protocolTests -> "Bundled TURN runner"
+        id in protocolTests -> "Built-in TURN runner"
         id in scenarioTests && config.scenarios.any { it.testId == id } -> "Configured scenario"
         id in scenarioTests -> "Needs scenario / identities / receiver assertions"
         else -> "Manual / external — see contract"
     }
 
-    /** Runnable buckets: these have an automated backend ready to execute now. */
-    private val runnableCapabilities = setOf("Passive analysis", "Bundled TURN runner", "Configured scenario")
-    fun executable(config: AssessmentConfig): Set<String> =
-        definitions.map { it.id }.filter { capability(it, config) in runnableCapabilities }.toSet()
+    /** Available execution adapters; prerequisites are reported by the controller. */
+    fun executable(config: AssessmentConfig = AssessmentConfig()): Set<String> =
+        passiveTests + protocolTests + config.scenarios.map { it.testId }.filter { it in scenarioTests }
+
+    fun description(id: String): String = when (id) {
+        "COR-01" -> "Review captured ICE addresses and relay-only privacy policy"
+        "COR-02" -> "Review ICE credential rotation during deliberate restarts"
+        "COR-03" -> "Review captured DTLS certificate and SDP fingerprint binding"
+        "COR-04" -> "Review SDP media sections and BUNDLE semantics"
+        "COR-05" -> "Review observed media crypto and SDP key exchange"
+        "SIG-01" -> "Review captured HTTP / WebSocket signaling"
+        "WEB-01" -> "Audit original CSP, framing, Permissions-Policy, HSTS and cookie headers captured before injection"
+        "WEB-02" -> "Review camera, microphone and screen-share capture lifecycle and permission states"
+        "WEB-03" -> "Review cross-window message listeners and wildcard postMessage use"
+        "TRN-01" -> "Probe STUN / TURN listener and server information"
+        "TRN-02" -> "Compare valid, absent and incorrect TURN credentials"
+        "TRN-04" -> "Verify TURN forwarding (second allocation, or your UDP echo peer)"
+        "TRN-05" -> "Compare TURN Send/Data and ChannelBind/ChannelData paths"
+        "TRN-07" -> "Allocate, refresh and release a TURN allocation"
+        else -> byId.getValue(id).title
+    }
 }
 
 @Serializable

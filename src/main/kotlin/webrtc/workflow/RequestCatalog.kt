@@ -22,6 +22,9 @@ class RequestCatalog {
             .sortedByDescending { it.json }.take(limit).map { it.request }
     }
 
+    @Synchronized fun recent(limit: Int = 5): List<HttpRequest> = entries.values.toList().asReversed()
+        .sortedByDescending { it.json }.take(limit.coerceIn(0, 5)).map { it.request }
+
     companion object {
         fun origin(value: String): String {
             val uri = URI(value)

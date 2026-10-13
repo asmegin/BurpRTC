@@ -20,8 +20,8 @@ class SearchableTextPane(title: String? = null, wrap: Boolean = false) : JPanel(
     }
     private val matchCase = JCheckBox("Match case")
     private val count = JLabel("0 / 0")
-    private val previous = JButton("Previous")
-    private val next = JButton("Next")
+    private val previous = UiKit.quiet(JButton("↑").apply { toolTipText = "Previous match (Shift+F3)"; accessibleContext.accessibleName = "Previous match" })
+    private val next = UiKit.quiet(JButton("↓").apply { toolTipText = "Next match (F3)"; accessibleContext.accessibleName = "Next match" })
     private val matches = ArrayList<Int>()
     private var current = -1
     private var highlight: Any? = null
@@ -53,19 +53,26 @@ class SearchableTextPane(title: String? = null, wrap: Boolean = false) : JPanel(
 
     init {
         if (title != null) border = BorderFactory.createTitledBorder(title)
-        // Two short rows keep each comparison pane usable at half the tab width.
+        // Search stays compact in split comparison panes; extra options open from a menu.
         val fieldRow = JPanel(BorderLayout(5, 0)).apply {
             add(JLabel("Find:"), BorderLayout.WEST)
             add(query, BorderLayout.CENTER)
-            add(matchCase, BorderLayout.EAST)
         }
-        val navigation = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0)).apply {
+        val navigation = JPanel(FlowLayout(FlowLayout.LEFT, 3, 0)).apply {
             add(previous); add(next); add(count)
-            add(JButton("Clear").apply { addActionListener { query.text = ""; query.requestFocusInWindow() } })
+            val options = UiKit.quiet(JButton("⋯")).apply {
+                toolTipText = "Search options"; accessibleContext.accessibleName = "Search options"
+                val menu = JPopupMenu()
+                menu.add(JCheckBoxMenuItem("Match case").apply { addActionListener { matchCase.isSelected = isSelected; refreshSearch() } })
+                menu.add(JMenuItem("Clear search").apply { addActionListener { query.text = ""; query.requestFocusInWindow() } })
+                addActionListener { menu.show(this, 0, height) }
+            }
+            add(options)
         }
-        add(JPanel(BorderLayout(0, 3)).apply {
-            add(fieldRow, BorderLayout.NORTH)
-            add(navigation, BorderLayout.SOUTH)
+        add(JPanel(BorderLayout(6, 0)).apply {
+            border = BorderFactory.createEmptyBorder(5, 6, 5, 6)
+            add(fieldRow, BorderLayout.CENTER)
+            add(navigation, BorderLayout.EAST)
         }, BorderLayout.NORTH)
         add(JScrollPane(area), BorderLayout.CENTER)
         minimumSize = Dimension(220, 100)

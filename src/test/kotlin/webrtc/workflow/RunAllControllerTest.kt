@@ -11,8 +11,116 @@ import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertEquals
+import webrtc.config.ScanPlan
+import webrtc.config.ScanModule
+import kotlinx.serialization.json.*
 
 class RunAllControllerTest {
+    @Test fun `empty selection runs no checks and never invokes authorization backend`() {
+        val store = freshStore()
+        var replays = 0
+        val telemetry = TelemetryTableModel()
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry,
+            automaticAuthz = { _, _ -> replays++; 1 }).run(ScanPlan(emptySet())) { lines += it }
+        assertEquals(0, replays)
+        assertTrue(lines.single().text.contains("No scans selected"))
+    }
+    @Test fun `authorization checkbox invokes backend and unchecked modules do not run`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"))) }
+        var replays = 0
+        val telemetry = TelemetryTableModel()
+        val runner = RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry,
+            automaticAuthz = { canRun, _ -> assertTrue(canRun()); replays++; 1 })
+        runner.run(ScanPlan(setOf("passive"))) { }
+        assertEquals(0, replays)
+        runner.run(ScanPlan(setOf("authz"))) { }
+        assertEquals(1, replays)
+        assertTrue(telemetry.snapshot().none { it.type == "test-job" })
+    }
+    @Test fun `stats only scan queues no ICE DataChannel SDP or local loop commands`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"))) }
+        val telemetry = TelemetryTableModel()
+        val controller = ActiveTestController(store, { true }, telemetry)
+        controller.observe(buildJsonObject {
+            put("type", "agent-state"); put("agent", "page"); put("frame", "https://example.test/call")
+            put("channels", buildJsonArray { add(buildJsonObject { put("channelId", "dc1"); put("state", "open") }) })
+        })
+        val runner = RunAllController(store, controller, telemetry)
+        val commands = mutableListOf<String>()
+        val task = java.util.concurrent.CompletableFuture.runAsync { runner.run(ScanPlan(setOf("stats"))) { } }
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+        try {
+            while (!task.isDone && System.nanoTime() < deadline) {
+                controller.commands("page", "https://example.test/call").forEach { command ->
+                    commands += command.getValue("type").jsonPrimitive.content
+                    controller.observe(buildJsonObject {
+                        put("type", "command-result"); put("agent", "page"); put("frame", "https://example.test/call")
+                        put("commandId", command.getValue("id")); put("status", "completed")
+                    })
+                }
+                Thread.sleep(10)
+            }
+            task.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf("capture-stats"), commands)
+        } finally { runner.requestStop() }
+    }
+    @Test fun `Scan All enables saved mutation without the tab enable switch`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"),
+            sdpMutation = webrtc.config.SdpMutationConfig(removeFingerprint = true))) }
+        val telemetry = TelemetryTableModel()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry).run(ScanPlan(setOf("mutation"))) { }
+        assertTrue(store.config.sdpMutation.enabled)
+        assertTrue(store.load().sdpMutation.enabled)
+    }
+    @Test fun `TLS checkbox starts selected listener even when legacy opt-in is false`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"),
+            tlsScan = webrtc.tls.TlsScanConfig(endpoint = "https://example.test/", includeInRunAll = false))) }
+        val telemetry = TelemetryTableModel()
+        val tls = webrtc.tls.TlsScanRunner(store, { false }, telemetry)
+        val runner = RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry, tls)
+        runner.run(ScanPlan(setOf("passive"))) { }
+        assertTrue(telemetry.snapshot().none { it.type == "tls-scan-error" })
+        runner.run(ScanPlan(setOf("tls"))) { }
+        assertTrue(telemetry.snapshot().any { it.type == "tls-scan-error" })
+        tls.close()
+    }
+    @Test fun `local loop selection supplies its enable flag without requiring a second tab switch`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"))) }
+        assertFalse(store.config.signalingFlood.confirm)
+        val telemetry = TelemetryTableModel()
+        val controller = ActiveTestController(store, { true }, telemetry)
+        controller.observe(buildJsonObject { put("type", "agent-state"); put("agent", "page"); put("frame", "https://example.test/call") })
+        val runner = RunAllController(store, controller, telemetry)
+        val task = java.util.concurrent.CompletableFuture.runAsync { runner.run(ScanPlan(setOf("local-flood"))) { } }
+        val commands = mutableListOf<JsonObject>()
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+        try {
+            while (!task.isDone && System.nanoTime() < deadline) {
+                controller.commands("page", "https://example.test/call").forEach { command ->
+                    commands += command
+                    controller.observe(buildJsonObject {
+                        put("type", "command-result"); put("agent", "page"); put("frame", "https://example.test/call")
+                        put("commandId", command.getValue("id")); put("status", "completed")
+                    })
+                }
+                Thread.sleep(10)
+            }
+            task.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals("signaling-flood", commands.single().getValue("type").jsonPrimitive.content)
+            assertTrue(commands.single().getValue("config").jsonObject.getValue("confirm").jsonPrimitive.boolean)
+        } finally { runner.requestStop() }
+    }
+    @Test fun `current authorization results reach checklist before UI publication`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"))) }
+        val telemetry = TelemetryTableModel()
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry, automaticAuthz = { _, emit ->
+            emit(webrtc.authz.AuthzResult("https://example.test/api", "unauth", 200, 10, "hash", true, true, "test", null)); 1
+        }).run(ScanPlan(setOf("authz"))) { lines += it }
+        assertTrue(lines.any { it.text.startsWith("Signaling authentication tests — ") && it.level == RunAllController.Level.WARN && it.text.contains("Review required") })
+    }
     @Test fun `run all emits every checklist item and shares authorization evidence`() {
         val store = freshStore()
         val telemetry = TelemetryTableModel()
@@ -245,5 +353,31 @@ class RunAllControllerTest {
         telemetry.add(rawEvent("dtls-cert", """{"type":"dtls-cert","pc":"pc1","role":"remote","algorithm":"sha-256","fingerprint":"AA","base64":"###"}"""))
         val lines = runReport(store, telemetry)
         assertTrue(lines.any { it.text.contains("could not be analysed") })
+    }
+
+    @Test fun `meeting link and document modules run their backends and likely violations are findings`() {
+        val store = freshStore().also { it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test"))) }
+        val telemetry = TelemetryTableModel()
+        var invites = 0; var artifacts = 0
+        val violation = webrtc.authz.AuthzResult("https://example.test/documents/1", "artifact:Bob", 200, 10, "h", true, true, "same document", null,
+            expectation = "deny", verdict = webrtc.authz.AuthzResult.LIKELY_VIOLATION)
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry,
+            automaticInvites = { _, _ -> invites++; 0 },
+            automaticArtifacts = { _, emit -> artifacts++; emit(violation); 1 }).run(ScanPlan(setOf("invites", "artifacts"))) { lines += it }
+        assertEquals(1, invites); assertEquals(1, artifacts)
+        assertTrue(lines.any { it.level == RunAllController.Level.FINDING && it.text.contains("likely violation") })
+        assertTrue(lines.any { it.text.contains("No meeting / invite link captured") })
+        assertTrue(lines.any { it.text.contains("Likely access violations: 1") })
+    }
+    @Test fun `client security section reports original header audit and executed canaries`() {
+        val store = freshStore()
+        val telemetry = TelemetryTableModel()
+        telemetry.add(rawEvent("original-policy", """{"type":"original-policy","frame":"https://example.test/advisor","contentType":"text/html","headers":[]}"""))
+        telemetry.add(rawEvent("xss-canary-fired", """{"type":"xss-canary-fired","canaryId":"wrtcxabcdefghij","origin":"https://example.test","href":"https://example.test/advisor"}"""))
+        val lines = mutableListOf<RunAllController.Line>()
+        RunAllController(store, ActiveTestController(store, { true }, telemetry), telemetry).passiveReport { lines += it }
+        assertTrue(lines.any { it.text.contains("Page can be framed by any site") })
+        assertTrue(lines.any { it.level == RunAllController.Level.FINDING && it.text.startsWith("Stored XSS executed") })
     }
 }

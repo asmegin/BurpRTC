@@ -130,6 +130,16 @@ class TlsScanRunner(
         return task(target) {
             if (isCancelled()) throw Aborted("cancelled", "TLS task stopped")
             if (!authorized(target)) throw Aborted("blocked", "Enable injection, allow ${target.host}, and add ${target.scopeUrl} to Burp Target scope")
+            if (config.engine == "builtin") {
+                event("tls-scan-start", "TLS scan started (built-in): ${target.host}:${target.port}; scope ${target.scopeUrl}", target)
+                val result = JvmTlsScanner({ authorized(target) }, { stopped || closed || isCancelled() },
+                    nanoTime() + TimeUnit.SECONDS.toNanos(config.timeoutSeconds.toLong())).scan(target.host, target.port)
+                val status = result["status"]?.jsonPrimitive?.content ?: "failed"
+                val detail = "TLS scan $status (built-in): ${target.host}:${target.port}; ${(result["checks"] as JsonArray).size} checks, ${(result["findings"] as JsonArray).size} observations" +
+                    (result["error"]?.jsonPrimitive?.content?.let { "; $it" } ?: "")
+                event("tls-scan-result", detail, target, result)
+                return@task Outcome(status, detail, result)
+            }
             requireRuntime(config)
             val request = buildJsonObject {
                 put("hostname", target.host); put("port", target.port); put("vulnerabilityChecks", config.vulnerabilityChecks)
@@ -149,7 +159,7 @@ class TlsScanRunner(
     }
 
     private fun requireRuntime(config: TlsScanConfig) {
-        require(Files.isRegularFile(Path.of(python(config)))) { "Click Setup TLS runner first (Python 3.10+ must be installed)" }
+        require(Files.isRegularFile(Path.of(python(config)))) { "SSLyze engine selected: click Setup SSLyze first (Python 3.10+ must be installed), or choose the built-in engine" }
     }
     private fun parse(value: String): JsonObject = json.parseToJsonElement(value.trim()).jsonObject
 

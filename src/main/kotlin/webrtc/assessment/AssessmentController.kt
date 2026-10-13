@@ -1,6 +1,7 @@
 package webrtc.assessment
 
 import webrtc.config.ConfigStore
+import webrtc.external.ExternalInputs
 import webrtc.protocol.ProtocolRunner
 import webrtc.protocol.ProtocolTarget
 import webrtc.telemetry.TelemetryTableModel
@@ -9,7 +10,8 @@ class AssessmentController(private val config: ConfigStore, val store: OutcomeSt
                            private val runner: ProtocolRunner, private val telemetry: TelemetryTableModel) {
     @Volatile private var cancelled = false
     fun stop() { cancelled = true; runner.stop() }
-    @Synchronized fun run(ids: Set<String> = config.config.assessment.selectedTests, retryIncomplete: Boolean = false,
+    fun checkRuntime(): String = runner.check()
+    @Synchronized fun run(ids: Set<String> = TestRegistry.executable(config.config.assessment), retryIncomplete: Boolean = false,
                           emit: (String) -> Unit = {}) {
         cancelled = false
         val cfg = config.config
@@ -25,13 +27,25 @@ class AssessmentController(private val config: ConfigStore, val store: OutcomeSt
             val id = definition.id
             when {
                 id in TestRegistry.protocolTests -> {
-                    val endpoints = cfg.protocolScan.endpoints.mapNotNull { runCatching { ProtocolTarget.parse(it) }.getOrNull() }
-                        .filter { it.scheme in if (id == "TRN-01") setOf("stun", "stuns", "turn", "turns") else setOf("turn", "turns") }.distinct()
-                    if (endpoints.isEmpty()) record(id, "blocked", "Needs selected STUN/TURN listener")
-                    else if (id in setOf("TRN-04", "TRN-05") && cfg.protocolScan.relayPeer.isBlank()) record(id, "blocked", "Needs controlled UDP echo destination")
-                    else endpoints.forEach { target ->
+                    val schemes = if (id == "TRN-01") setOf("stun", "stuns", "turn", "turns") else setOf("turn", "turns")
+                    // Endpoints and credentials come from the ICE servers the agent observed on the
+                    // application's peers, so nothing has to be configured in the tab. Any manually
+                    // entered endpoints are still honored as a fallback.
+                    val legs = LinkedHashMap<String, Triple<ProtocolTarget, String?, String?>>()
+                    ExternalInputs.detect(cfg, telemetry.snapshot()).iceServers.asReversed().forEach { server ->
+                        server.urls.forEach { url ->
+                            runCatching { ProtocolTarget.parse(url) }.getOrNull()?.takeIf { it.scheme in schemes }
+                                ?.let { legs.putIfAbsent(it.input, Triple(it, server.username.orEmpty(), server.credential.orEmpty())) }
+                        }
+                    }
+                    cfg.protocolScan.endpoints.forEach { endpoint ->
+                        runCatching { ProtocolTarget.parse(endpoint) }.getOrNull()?.takeIf { it.scheme in schemes }
+                            ?.let { legs[it.input] = Triple(it, cfg.protocolScan.turnUsername, cfg.protocolScan.turnCredential) }
+                    }
+                    if (legs.isEmpty()) record(id, "blocked", "No STUN/TURN listener observed yet — join a call so the agent captures the app's ICE servers, and add the listener host to Burp Target scope")
+                    else legs.values.take(20).forEach { (target, user, pass) ->
                         if (!cancelled && (!retryIncomplete || id to target.input !in finished)) {
-                            val result = runner.run(id, target) { cancelled }
+                            val result = runner.run(id, target, { cancelled }, user, pass)
                             emit("$id ${target.input}: ${result.execution}; ${result.security}; ${result.limitations.joinToString()}")
                         }
                     }
@@ -47,7 +61,9 @@ class AssessmentController(private val config: ConfigStore, val store: OutcomeSt
                     }
                 }
                 id in TestRegistry.passiveTests -> {
-                    val types = when (id) { "COR-01" -> setOf("ice"); "COR-02", "COR-04", "COR-05" -> setOf("sdp-local", "sdp-remote", "crypto"); "COR-03" -> setOf("dtls-cert"); "SIG-01" -> setOf("signaling-observation"); else -> setOf("original-policy") }
+                    val types = when (id) { "COR-01" -> setOf("ice"); "COR-02", "COR-04", "COR-05" -> setOf("sdp-local", "sdp-remote", "crypto"); "COR-03" -> setOf("dtls-cert"); "SIG-01" -> setOf("signaling-observation")
+                        "WEB-02" -> setOf("track-state", "capture-result", "getUserMedia-result", "browser-capabilities", "enumerateDevices-result")
+                        "WEB-03" -> setOf("message-listener", "message-received", "message-sent"); else -> setOf("original-policy") }
                     val evidence = telemetry.snapshot().filter { it.type in types }
                     record(id, if (evidence.isEmpty()) "not-tested" else "observed", if (evidence.isEmpty()) "No relevant observations captured" else "${evidence.size} observations available in M7; passive interpretation only")
                 }

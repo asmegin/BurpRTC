@@ -11,6 +11,10 @@ import webrtc.telemetry.CertificateAnalyzer
 import webrtc.telemetry.TelemetryEvent
 import webrtc.workflow.SignalingMetadata
 
+private object TestRegistryTitles {
+    fun title(id: String) = runCatching { webrtc.assessment.TestRegistry.description(id) }.getOrDefault("")
+}
+
 /** Fixed engagement taxonomy. Evidence is recorded separately from security conclusions. */
 enum class SecurityArea(val title: String) {
     SIGNALING("Signaling Channel Security (WebSocket / HTTP-SSE)"),
@@ -229,13 +233,49 @@ object SecurityTestReport {
         unsupported(SecurityArea.ARCHITECTURE, "SFU / MCU / Gateway identification and isolation", "Architecture is not established by the current captures. Tenant isolation, routing, transcoding, gateway trust and media access require server-side/application evidence.")
 
         authz.forEachIndexed { index, result ->
-            add(SecurityArea.AUTH, "HTTP authorization replay: ${result.variant}", when {
+            val artifact = result.variant.startsWith("artifact:")
+            val invite = result.variant.startsWith("invite:")
+            val baseline = result.variant.endsWith("baseline")
+            add(if (artifact) SecurityArea.STORAGE else SecurityArea.AUTH, when {
+                artifact -> "Document / recording access: ${result.variant.removePrefix("artifact:")}"
+                invite -> "Meeting link: ${result.variant.removePrefix("invite:")}"
+                else -> "HTTP authorization replay: ${result.variant}"
+            }, when {
                 result.variant == "SKIPPED" -> Status.SKIPPED
                 result.status == 0 -> Status.ERROR
-                result.flagged -> Status.REVIEW
+                result.verdict == AuthzResult.LIKELY_VIOLATION -> Status.FINDING
+                result.flagged && result.verdict != AuthzResult.PUBLIC -> Status.REVIEW
                 else -> Status.OBSERVED
-            }, "${result.baselineUrl}: HTTP ${result.status}; length=${result.length}; body hash=${result.bodyHash}; same as baseline=${result.sameAsBaseline}; flagged=${result.flagged}; ${result.note}. A non-baseline 2xx is a review lead; resource ownership and intended permissions must be verified.", authzIndex = index + 1,
-                checks = if (result.variant == "baseline") emptySet() else setOf(CoverageCheck.SIGNALING_AUTH, CoverageCheck.API_SECURITY))
+            }, "${result.baselineUrl}: HTTP ${result.status}; length=${result.length}; body hash=${result.bodyHash}; same as baseline=${result.sameAsBaseline}; flagged=${result.flagged}; " +
+                (if (result.expectation.isNotEmpty()) "expected=${result.expectation}; " else "") + (if (result.verdict.isNotEmpty()) "verdict=${result.verdict}; " else "") +
+                "${result.note}. A non-baseline 2xx without an owner match is a review lead; resource ownership and intended permissions must be verified.", authzIndex = index + 1,
+                checks = when {
+                    baseline -> emptySet()
+                    artifact -> setOf(CoverageCheck.STORAGE)
+                    invite -> setOf(CoverageCheck.SESSION)
+                    else -> setOf(CoverageCheck.SIGNALING_AUTH, CoverageCheck.API_SECURITY)
+                })
+        }
+        events.filter { it.type == "assessment-result" }.forEach { event ->
+            val outcome = objectOf(event)?.get("outcome") as? JsonObject ?: return@forEach
+            val testId = outcome.str("testId") ?: return@forEach
+            val (area, checks) = when (testId) {
+                "TRN-01" -> SecurityArea.NAT to emptySet()
+                "TRN-02" -> SecurityArea.NAT to setOf(CoverageCheck.TURN_AUTH)
+                "TRN-04", "TRN-05" -> SecurityArea.NAT to setOf(CoverageCheck.TURN_ABUSE)
+                "TRN-07" -> SecurityArea.NAT to emptySet()
+                "SIG-02", "SIG-03" -> SecurityArea.SIGNALING to setOf(CoverageCheck.WEBSOCKET_AUTH, CoverageCheck.SIGNALING_AUTH)
+                "SIG-04", "SIG-06" -> SecurityArea.AUTH to setOf(CoverageCheck.SIGNALING_AUTH, CoverageCheck.API_SECURITY)
+                "SIG-05" -> SecurityArea.AUTH to setOf(CoverageCheck.SESSION)
+                else -> return@forEach
+            }
+            if (outcome.str("backend") == "registry") return@forEach
+            add(area, "$testId ${TestRegistryTitles.title(testId)}: ${outcome.str("target")}", when {
+                outcome.str("security") == "policy-violation" -> Status.FINDING
+                outcome.str("execution") in setOf("completed", "observed") -> Status.COMPLETED
+                else -> state(outcome.str("execution"))
+            }, "execution=${outcome.str("execution")}; security=${outcome.str("security")}; control=${outcome.str("control")}; cleanup=${outcome.str("cleanup")}; " +
+                "limitations=${(outcome["limitations"] as? JsonArray)?.joinToString(" ") { (it as? JsonPrimitive)?.content.orEmpty() }}", listOf(event), checks = checks)
         }
         absent(SecurityArea.AUTH, "HTTP authorization matrix", authz.isNotEmpty(), "No replay results recorded. Configured identities are not executed tests.")
         config.identifierKeys.forEach { key ->
@@ -246,15 +286,31 @@ object SecurityTestReport {
 
         add(SecurityArea.CLIENT, "Test instrumentation configuration", Status.CONFIGURED,
             "injectionEnabled=${config.injectionEnabled}, stripCsp=${config.stripCsp}. When CSP stripping is enabled, observed page behavior reflects modified CSP; enforced frame-ancestors is preserved. This is not an XSS/origin protection test.")
-        val browserEvents = events.filter { it.type in setOf("installed", "getUserMedia", "getUserMedia-result") }
+        val browserEvents = events.filter { it.type in setOf("installed", "getUserMedia", "getUserMedia-result", "getDisplayMedia") }
         browserEvents.forEach { event ->
             add(SecurityArea.CLIENT, if (event.type == "installed") "Browser agent installation" else "Camera / microphone permission observation", Status.OBSERVED,
                 "${event.frame}: ${detail(event)}; outcome=${objectOf(event).str("outcome") ?: "not supplied"}; error=${objectOf(event).str("error") ?: "none supplied"}. Permission grant/rejection is an observation, not a bypass test.", listOf(event),
                 checks = if (event.type == "getUserMedia-result") setOf(CoverageCheck.PERMISSIONS) else emptySet())
         }
         absent(SecurityArea.CLIENT, "Browser API / permission observations", browserEvents.isNotEmpty(), "No installation or media-permission event recorded.")
-        unsupported(SecurityArea.CLIENT, "XSS / origin / iframe / Permissions Policy enforcement", "Agent injection is not an XSS finding. These controls require dedicated tests against original responses and page behavior.")
-        unsupported(SecurityArea.STORAGE, "Recording / archival / regulatory compliance", "No recording-storage or compliance tests implemented. Access controls, retention/deletion, encryption at rest, consent, residency and regulatory requirements require application and policy evidence.")
+        webrtc.telemetry.PolicyAudit.audit(events).forEach { issue ->
+            add(SecurityArea.CLIENT, "Original header audit: ${issue.title}", if (issue.level == webrtc.telemetry.PolicyAudit.Level.REVIEW) Status.REVIEW else Status.OBSERVED,
+                "${issue.origin}: ${issue.detail} Evaluated on headers captured before injection.", issue.events,
+                checks = if (issue.rule.startsWith("hsts")) setOf(CoverageCheck.TRANSPORT) else setOf(CoverageCheck.BROWSER_ORIGIN))
+        }
+        webrtc.telemetry.BrowserReview.review(events).forEach { item ->
+            add(SecurityArea.CLIENT, item.title, when (item.level) {
+                webrtc.telemetry.BrowserReview.Level.FINDING -> Status.FINDING
+                webrtc.telemetry.BrowserReview.Level.REVIEW -> Status.REVIEW
+                webrtc.telemetry.BrowserReview.Level.INFO -> Status.OBSERVED
+            }, item.text, item.events, checks = when (item.topic) {
+                webrtc.telemetry.BrowserReview.Topic.CAPTURE, webrtc.telemetry.BrowserReview.Topic.PERMISSIONS -> setOf(CoverageCheck.PERMISSIONS)
+                webrtc.telemetry.BrowserReview.Topic.CALLBACK -> setOf(CoverageCheck.BROWSER_ORIGIN, CoverageCheck.INJECTION)
+                else -> setOf(CoverageCheck.BROWSER_ORIGIN)
+            })
+        }
+        unsupported(SecurityArea.CLIENT, "Reflected / DOM XSS outside canary sinks", "Stored XSS is proven only where canaries were placed; reflected and DOM-based XSS need Burp Scanner or manual testing against original responses.")
+        unsupported(SecurityArea.STORAGE, "Retention / encryption at rest / regulatory compliance", "Download access is tested by Documents & recordings; retention/deletion, encryption at rest, consent, residency and regulatory requirements require application and policy evidence.")
 
         val floodEvents = events.filter { it.type in setOf("flood-result", "signaling-flood-summary", "signaling-flood-error") }
         floodEvents.forEach { event ->
@@ -418,6 +474,16 @@ object SecurityTestReport {
                 appendLine("### Authz ${index + 1}: ${cell(result.variant)}"); appendLine()
                 appendLine("URL: ${cell(result.baselineUrl)} · HTTP ${result.status} · Length: ${result.length} · Body hash: ${cell(result.bodyHash)} · Same as baseline: ${result.sameAsBaseline} · Flagged: ${result.flagged}")
                 appendLine(); appendLine(cell(result.note)); appendLine()
+                listOf("Baseline request" to result.baselineRequestResponse?.request(),
+                    "Baseline response" to result.baselineRequestResponse?.response(),
+                    "Replay request" to result.requestResponse?.request(),
+                    "Replay response" to result.requestResponse?.response()).forEach { (title, message) ->
+                    if (message != null) {
+                        val raw = message.toString()
+                        val fence = "`".repeat(maxOf(3, (Regex("`+").findAll(raw).maxOfOrNull { it.value.length } ?: 0) + 1))
+                        appendLine("**$title**"); appendLine(); appendLine("${fence}http"); appendLine(raw); appendLine(fence); appendLine()
+                    }
+                }
             }
         }
     }

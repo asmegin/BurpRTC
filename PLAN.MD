@@ -1,15 +1,19 @@
 # PLAN.MD — WebRTC Test Suite coverage expansion
 
-Status: **Tier 1 (T1–T8) + 1.1.0 shipped; current build 1.1.0** (extension and agent aligned at
-1.1.0; 83-item executable assessment registry; managed protocol runner for STUN/TURN,
-authentication matrix, and relay paths; stateful HTTP/WebSocket scenario execution;
-T9 native WebSocket capture and decoding; methodology analysis corrections COR-01–06;
-extension and runner self-protection LAB-05; configuration auto-save). Remaining Tier 2
-(T10–T14) and Tier 3 external catalogue items remain planned in TODO.md. Target: increase
-self-contained coverage while keeping the stated design boundary.
+**Current build: 1.2.0 (2026-10-13).** Extension and agent are aligned at 1.2.0.
+STUN/TURN tests, HTTP/WebSocket scenarios and the default TLS engine run on the JVM
+inside Burp; Python is only needed for the optional SSLyze engine. 1.2.0 adds the
+video banking work (session roles and verdicts, meeting links, documents and
+recordings, XSS canaries with Collaborator, screen-share and capture lifecycle,
+postMessage review, original header audit), Burp-native issues, and the browser
+checks command that earlier builds queued but never executed. The tier descriptions
+below retain delivery history; TODO.md holds the open backlog and DOCS.md the
+release notes.
 
-Baseline: extension 0.8.0, agent 0.7.0. Current build: 1.1.0. All changes are additive;
-the full JVM (126), agent (36), and Python (11) suites pass.
+Status: **Tier 1 (T1–T8) shipped; T9 shipped in 1.1.0; T12 (permissions/device
+surface) shipped in 1.2.0.** T10, T11, T13, T14 and the Tier 3 catalogue items remain
+planned in TODO.md. Target: increase self-contained coverage while keeping the
+stated design boundary.
 
 Tier 1 and 1.1.0 implementation notes:
 - T1 events: `stats-snapshot` + `dtls-cert`, with a manual **Capture stats (T1)** button in

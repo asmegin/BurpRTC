@@ -1,5 +1,14 @@
 # TODO — comprehensive WebRTC pentesting from Burp
 
+**1.2.0 update (2026-10-13):** The extension is self-contained. STUN/TURN tests,
+HTTP/WebSocket scenarios and the default TLS engine run on the JVM inside Burp, and
+Python is only needed for the optional SSLyze engine. TRN-04/05 verify forwarding
+through a second allocation when no echo peer is supplied. Video banking work: session
+roles with access verdicts, meeting-link and document/recording replays, XSS and
+callback canaries with Burp Collaborator, screen-share and capture lifecycle,
+postMessage review, the original-header audit, a banking preset and Burp-native
+issues. Items below carry 1.2.0 notes where they changed.
+
 Reviewed **2026-10-02** against the documented **1.0.5** baseline. This is an
 implementation backlog, not a record of tests executed or vulnerabilities found
 in a target. All checkboxes describe remaining work, including extensions to
@@ -139,6 +148,7 @@ ordinary selected tests.
   room IDs, SDP and candidates, and deduplicated Burp issues with reproduction and
   remediation. Import companion results into the same engagement. Done when the
   tester can move from observation to test to issue without re-entering evidence.
+  *(1.2.0 partial: deduplicated WebRTC issues are added to Burp's Issues list with evidence, an Intruder canary payload source is registered, and context actions stage requests in Access control. RTC-specific scanner insertion points remain open.)*
 
 ## Correct existing analysis before expanding its reach
 
@@ -244,6 +254,7 @@ ordinary selected tests.
   fixtures and compare response content/timing. Done when identifier guessability
   is separated from demonstrated unauthorized admission or information exposure.
   *(Shipped in 1.1.0: Bounded scenario testing for waiting rooms, locked rooms, and password gates).*
+  *(1.2.0: meeting / invite links are also tested directly — altered, removed and session-less token replays, guessability estimate and post-meeting recheck.)*
 
 - [ ] **SIG-07 · P1 · Paired · Call-state and user-consent regression suite.**
   Reorder/replay offer, answer, candidate, renegotiation, and hangup messages before
@@ -266,6 +277,7 @@ ordinary selected tests.
   SQL/command/template injection, unsafe deserialization and prototype pollution
   where the receiving technology applies. Require sink execution, a controlled
   callback, or another concrete effect; reflected strings alone are not proof.
+  *(1.2.0 partial: self-reporting XSS canaries prove stored script execution in any instrumented page, with Collaborator for uninstrumented pages and reflection tracking in HTTP/WebSocket traffic. SQL/command/template and deserialization cases remain open.)*
 
 - [ ] **SIG-10 · P2 · Burp · SSE, polling, and HTTP signaling parity.** Apply
   authentication, CORS/CSRF, subscription authorization, reconnect, Last-Event-ID,
@@ -427,6 +439,7 @@ proposed test cases built around those protocols and the cited research.
   each resolved endpoint; report trust, protocol/cipher and vulnerability probes
   separately. Compare listener aliases/backends where selected. Do not count a
   successful TCP TLS scan as DTLS media coverage.
+  *(1.2.0 partial: the built-in JVM TLS engine runs without Python and covers SSL 3.0 to TLS 1.3, TLS 1.2 suites and certificates; automatic queuing of every discovered listener remains open.)*
 
 - [ ] **DTL-02 · P1 · Runner + Paired · ICE-aware DTLS capability testing.**
   Establish authorized signaling and ICE before testing media DTLS. Enumerate
@@ -569,11 +582,12 @@ an ICE candidate do not provide these tests. The protocol baseline is
 
 ## Browser permissions and client security
 
-- [ ] **WEB-01 · P1 · Passive + Browser · Original-policy capture.** Preserve
+- [x] **WEB-01 · P1 · Passive + Browser · Original-policy capture.** Preserve
   original CSP, Permissions-Policy, frame rules, CORS, cookies and secure-context
   metadata before injection changes them. Run origin/XSS/framing checks in an
   unmodified comparison context. Done when stripped CSP or injected agent behavior
   cannot be reported as the target's native policy or an exploitable XSS result.
+  *(Shipped in 1.2.0: `PolicyAudit` reviews the original headers captured before injection — framing, CSP, Permissions-Policy, HSTS, session cookies, CORS null and meeting-token Referrer leaks.)*
 
 - [ ] **WEB-02 · P2 · Browser + Paired · Permissions and capture lifecycle
   (T12).** Extend getUserMedia telemetry to display capture, device enumeration
@@ -582,6 +596,7 @@ an ICE candidate do not provide these tests. The protocol baseline is
   continues after the user-facing stop action, using synthetic tracks. Keep user
   gestures and browser-specific restrictions explicit; avoid collecting real
   microphone/camera contents for a generic scan.
+  *(1.2.0 partial: `getDisplayMedia` outcomes and surfaces, track stop/end, capture still live after the last peer closes, permission states, permission policy and device-label exposure. Revocation during a call and cross-origin frames remain open.)*
 
 - [ ] **WEB-03 · P2 · Browser · Cross-origin integration.** Test postMessage
   origin/source validation, embedded call controls, SDK callbacks, service-worker
@@ -589,6 +604,7 @@ an ICE candidate do not provide these tests. The protocol baseline is
   actual app roles and trusted parent origins. Support Chromium, Firefox and
   WebKit capability matrices; an unavailable API is a coverage limitation, not
   a successful security test.
+  *(1.2.0 partial: message listeners without origin checks, cross-origin messages received and wildcard postMessage use are recorded; SDK callbacks, service workers and multi-browser matrices remain open.)*
 
 ## Supporting APIs, recordings, infrastructure, and streaming
 
@@ -606,6 +622,7 @@ an ICE candidate do not provide these tests. The protocol baseline is
   deletion and cache persistence. Use owned fixtures. Record storage/encryption/
   retention evidence when supplied; technical tests alone cannot certify legal
   or regulatory compliance.
+  *(1.2.0 partial: Documents & recordings replays captured downloads across sessions and roles, without credentials and with neighbouring IDs, and reports signed-link lifetime. Recording start/stop roles, listing and deletion remain open.)*
 
 - [ ] **APP-03 · P2 · Burp + Paired · Callbacks, webhooks and fetchers.**
   Test webhook signature/timestamp/replay validation and authorization for room,
@@ -613,6 +630,7 @@ an ICE candidate do not provide these tests. The protocol baseline is
   import, transcription and callback URLs for SSRF with an owned callback or
   private-service emulator. Follow redirects only within the selected test scope.
   Link each received callback to the initiating test.
+  *(1.2.0 partial: Collaborator-backed callback canaries for webhook, export and import fields; signature/replay validation of webhooks remains open.)*
 
 - [ ] **APP-04 · P1 · Passive · Component and advisory inventory (T13).**
   Collect defensible browser, SDK, SFU, TURN, gateway, codec and crypto-library

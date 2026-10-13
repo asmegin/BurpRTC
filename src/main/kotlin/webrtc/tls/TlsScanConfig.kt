@@ -10,9 +10,13 @@ data class TlsScanConfig(
     val endpoint: String = "",
     val timeoutSeconds: Int = 180,
     val vulnerabilityChecks: Boolean = false,
-    val includeInRunAll: Boolean = false
+    // Retained for old project JSON. Scan All now uses ScanPlan's TLS selection.
+    val includeInRunAll: Boolean = false,
+    /** "builtin" runs the JVM scanner inside Burp; "sslyze" uses the optional managed Python environment. */
+    val engine: String = "builtin"
 ) {
     fun validate() {
+        require(engine in setOf("builtin", "sslyze")) { "TLS engine must be built-in or SSLyze" }
         require(pythonExecutable.isNotBlank() && pythonExecutable.none { it == '\u0000' || it == '\n' || it == '\r' }) { "Select a Python 3.10+ executable" }
         require(timeoutSeconds in 15..300) { "Use a 15–300 second scan timeout" }
     }

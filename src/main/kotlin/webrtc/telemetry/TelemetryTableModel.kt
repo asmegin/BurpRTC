@@ -29,7 +29,10 @@ object EventTypes {
         "stats-snapshot", "dtls-cert", "stats-capture-result", "stats-capture-error",
         "flood-result", "signaling-flood-summary", "signaling-flood-error",
         "internals-import", "internals-comparison",
-        "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error"
+        "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error",
+        "getDisplayMedia", "enumerateDevices-result", "browser-checks-error",
+        "message-listener", "message-received", "message-sent",
+        "xss-canary-fired", "xss-canary-reflected", "collaborator-interaction", "burp-issue"
     )
 }
 
@@ -38,13 +41,18 @@ class TelemetryTableModel : AbstractTableModel() {
     private val rows = ArrayList<TelemetryEvent>()
     private val seq = AtomicLong(0)
     private val archive = CopyOnWriteArrayList<TelemetryEvent>()
+    private val listeners = CopyOnWriteArrayList<(TelemetryEvent) -> Unit>()
 
     fun snapshot(): List<TelemetryEvent> = archive.toList()
 
     fun nextSeq(): Long = seq.incrementAndGet()
 
+    /** Called on the adding thread for every new event; listener failures are isolated. */
+    fun onEvent(listener: (TelemetryEvent) -> Unit) { listeners += listener }
+
     fun add(event: TelemetryEvent) {
         archive.add(event)
+        listeners.forEach { runCatching { it(event) } }
         SwingUtilities.invokeLater {
             rows.add(event)
             fireTableRowsInserted(rows.size - 1, rows.size - 1)

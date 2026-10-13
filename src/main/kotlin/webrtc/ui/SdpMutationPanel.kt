@@ -36,20 +36,27 @@ class SdpMutationPanel(private val store: ConfigStore, telemetry: TelemetryTable
     private val saveDebounce = Timer(350) { save() }.apply { isRepeats = false }
 
     init {
+        store.onChange { cfg -> SwingUtilities.invokeLater { enabled.isSelected = cfg.sdpMutation.enabled } }
         val form = JPanel(GridBagLayout())
+        val advanced = JPanel(GridBagLayout())
         val c = GridBagConstraints().apply {
-            insets = Insets(3, 6, 3, 6)
+            insets = Insets(7, 6, 7, 6)
             anchor = GridBagConstraints.WEST
             fill = GridBagConstraints.HORIZONTAL
         }
         var row = 0
         fun field(label: String, component: JComponent, help: JButton? = null) {
+            val panel = if (label in setOf("Peer ID (blank = all):", "DTLS:", "ICE:", "Audio/video direction:")) advanced else form
             c.gridx = 0; c.gridy = row; c.weightx = 0.0; c.fill = GridBagConstraints.HORIZONTAL
-            form.add(JLabel(label), c)
+            if (label.isEmpty() && component is JLabel) {
+                c.gridwidth = 3; c.weightx = 1.0
+                panel.add(UiKit.note(component.text), c); c.gridwidth = 1; row++; return
+            }
+            panel.add(JLabel(label).apply { labelFor = component }, c)
             c.gridx = 1; c.weightx = 1.0
-            form.add(component, c)
+            panel.add(component, c)
             c.gridx = 2; c.weightx = 0.0; c.fill = GridBagConstraints.NONE
-            form.add(help ?: JLabel(" "), c)
+            panel.add(help ?: JLabel(" "), c)
             row++
         }
         field("State:", enabled, HelpUi.button(
@@ -88,14 +95,19 @@ class SdpMutationPanel(private val store: ConfigStore, telemetry: TelemetryTable
             "Match: actpass\nReplace: passive\n\nThis changes that substring wherever it appears."
         ))
         field("", JLabel("Rules affect the next SDP operation on in-scope, allow-listed pages. Start a new call to test."))
-        field("", JLabel("Outgoing edits may be rejected by the browser. Trickle ICE and implicit setLocalDescription() are unchanged."))
+        field("", JLabel("Outgoing edits may be rejected by the browser. Removing embedded candidates does not stop trickle ICE."))
+        val saved = store.config.sdpMutation
+        form.add(UiKit.disclosure("Built-in edits & peer filter", advanced,
+            saved.removeFingerprint || saved.removeCandidates || saved.mediaDirection != "unchanged" || saved.pcId.isNotBlank()),
+            GridBagConstraints().apply { gridy = row; gridwidth = 3; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(10, 6, 6, 6) })
 
         val buttons = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-            add(JLabel("Changes save automatically and apply to subsequent SDP operations."))
+            add(JLabel("Saved automatically · applies to the next SDP operation").apply { putClientProperty("webrtc.role", "muted") })
             add(status)
         }
         val controls = JPanel(BorderLayout()).apply {
-            add(form, BorderLayout.CENTER)
+            preferredSize = java.awt.Dimension(800, 415)
+            add(UiKit.scroll(form), BorderLayout.CENTER)
             add(buttons, BorderLayout.SOUTH)
         }
         val table = JTable(telemetry).apply {
@@ -120,8 +132,9 @@ class SdpMutationPanel(private val store: ConfigStore, telemetry: TelemetryTable
             addTab("SDP comparison", comparison)
             addTab("Event / browser result", detail)
         }
-        val evidence = JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(table), details).apply { resizeWeight = 0.5 }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), evidence).apply { resizeWeight = 0.45 }, BorderLayout.CENTER)
+        val evidence = JSplitPane(JSplitPane.VERTICAL_SPLIT,
+            UiKit.emptyTable(table, "No SDP rule results yet", "Enable a saved rule and start a fresh call to collect before / after evidence."), details).apply { resizeWeight = 0.5 }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, controls, evidence).apply { resizeWeight = 0.35; dividerLocation = 415 }, BorderLayout.CENTER)
         before.onLineClick { line -> addClickedLineAsRule(line) }
         val schedule = { scheduleSave() }
         listOf(enabled, fingerprint, candidates).forEach { it.addActionListener { schedule() } }
@@ -164,7 +177,9 @@ class SdpMutationPanel(private val store: ConfigStore, telemetry: TelemetryTable
         }
         val panel = JPanel(BorderLayout(6, 0)).apply { add(pair, BorderLayout.CENTER) }
         val editor = RuleEditor(match, replacement, panel)
-        panel.add(JButton("Remove").apply { addActionListener { removeRuleEditor(editor) } }, BorderLayout.EAST)
+        panel.add(JPanel(java.awt.GridBagLayout()).apply {
+            add(UiKit.quiet(JButton("Remove").apply { addActionListener { removeRuleEditor(editor) } }))
+        }, BorderLayout.EAST)
         ruleEditors.add(editor)
         match.document.addDocumentListener(documentListener { scheduleSave() })
         replacement.document.addDocumentListener(documentListener { scheduleSave() })
@@ -192,6 +207,7 @@ class SdpMutationPanel(private val store: ConfigStore, telemetry: TelemetryTable
             alignmentX = LEFT_ALIGNMENT
             addActionListener { addRuleEditor() }
         })
+        UiKit.style(rulesPanel)
         rulesPanel.revalidate()
         rulesPanel.repaint()
     }

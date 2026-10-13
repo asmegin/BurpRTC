@@ -40,7 +40,7 @@ class CoverageChecklistTest {
         val result = check(CoverageCheck.TURN_AUTH, listOf(host, stun, turn))
         assertEquals(listOf(3L), result.results.single().evidence)
         assertEquals(CoverageSupport.PARTIAL, result.check.support)
-        assertTrue(result.check.scope.contains("does not automatically compare"))
+        assertTrue(result.check.scope.contains("TRN-02"))
     }
 
     @Test fun `TLS completion without protocol checks and unrelated certificate checks do not imply cipher coverage`() {
@@ -91,7 +91,8 @@ class CoverageChecklistTest {
         val unauth = baseline.copy(variant = "unauth", flagged = true, note = "known headers stripped")
         assertEquals(SecurityTestReport.Status.NOT_TESTED, check(CoverageCheck.SIGNALING_AUTH, authz = listOf(baseline)).results.single().status)
         assertEquals(SecurityTestReport.Status.REVIEW, check(CoverageCheck.SIGNALING_AUTH, authz = listOf(baseline, unauth)).results.single().status)
-        assertEquals(SecurityTestReport.Status.UNSUPPORTED, check(CoverageCheck.WEBSOCKET_AUTH, authz = listOf(unauth)).results.single().status)
+        // WebSocket authentication now has a scenario backend, but an HTTP replay never satisfies it.
+        assertEquals(SecurityTestReport.Status.NOT_TESTED, check(CoverageCheck.WEBSOCKET_AUTH, authz = listOf(unauth)).results.single().status)
     }
 
     @Test fun `cancelled runs retain partial evidence and summary escapes untrusted text`() {

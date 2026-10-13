@@ -10,13 +10,17 @@ data class DataChannelFuzzConfig(
     val count: Int = 1,
     val intervalMs: Int = 250,
     val maxBytes: Int = 4096,
-    val stopOnError: Boolean = true
+    val stopOnError: Boolean = true,
+    /** Used by mode "list": each payload is sent once, in order (for example XSS canaries). */
+    val payloads: List<String> = emptyList()
 ) {
     fun validate() {
-        require(mode in listOf("text", "hex", "json", "boundary")) { "Unknown payload mode" }
+        require(mode in listOf("text", "hex", "json", "boundary", "list")) { "Unknown payload mode" }
         require(count in 1..50 && intervalMs in 100..1000) { "Use 1-50 messages and a 100-1000 ms interval" }
         require(maxBytes in 1..65536 && count.toLong() * maxBytes <= 1048576) { "Limit each message to 65,536 bytes and each run to 1 MiB" }
         if (mode == "text") require(payload.toByteArray(Charsets.UTF_8).size <= maxBytes) { "Text exceeds the payload byte limit" }
+        if (mode == "list") require(payloads.size in 1..50 && count == payloads.size &&
+            payloads.all { it.toByteArray(Charsets.UTF_8).size <= maxBytes }) { "Send 1-50 listed payloads, each within the byte limit" }
         if (mode == "hex") {
             val hex = payload.replace(Regex("\\s"), "")
             require(hex.length % 2 == 0 && hex.matches(Regex("[0-9a-fA-F]*"))) { "Binary payload must contain pairs of hexadecimal digits" }
@@ -58,7 +62,7 @@ data class IceProbeConfig(
 /**
  * T8 — bounded, opt-in local renegotiation / ICE-restart loop. It drives only the
  * page's own `createOffer`/`setLocalDescription`; nothing is sent to the signaling
- * server. Off by default and never started by Run All unless [confirm] is set.
+ * server. Clicking Run and Scan All's selected module supply [confirm].
  */
 @Serializable
 data class SignalingFloodConfig(
@@ -67,7 +71,7 @@ data class SignalingFloodConfig(
     val intervalMs: Int = 1000
 ) {
     fun validate() {
-        require(confirm) { "Signaling/ICE-restart flood is opt-in; tick the confirmation before running" }
+        require(confirm) { "Click Run in Negotiation loop, or select the loop in Scan All" }
         require(count in 1..20) { "Use 1-20 renegotiations" }
         require(intervalMs in 500..5000) { "Use a 500-5000 ms interval" }
     }

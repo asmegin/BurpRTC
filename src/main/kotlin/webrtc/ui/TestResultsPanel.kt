@@ -8,7 +8,7 @@ import javax.swing.table.TableRowSorter
 /** Module-specific event history with searchable raw evidence. */
 class TestResultsPanel(model: TelemetryTableModel, types: String, module: String) : JPanel(BorderLayout()) {
     init {
-        val detail = SearchableTextPane(wrap = true)
+        val detail = SearchableTextPane("Result details", wrap = true).apply { text = "Select a result to see its full evidence." }
         val table = JTable(model).apply {
             TableCopyUi.install(this)
             rowSorter = TableRowSorter(model).apply {
@@ -24,6 +24,7 @@ class TestResultsPanel(model: TelemetryTableModel, types: String, module: String
         table.selectionModel.addListSelectionListener {
             if (!it.valueIsAdjusting) detail.text = if (table.selectedRow >= 0) model.eventAt(table.convertRowIndexToModel(table.selectedRow))?.raw.orEmpty() else ""
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(table), detail).apply { resizeWeight = 0.55 }, BorderLayout.CENTER)
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT,
+            UiKit.emptyTable(table, "No test results yet", "Run this test to collect results here."), detail).apply { resizeWeight = 0.55 }, BorderLayout.CENTER)
     }
 }

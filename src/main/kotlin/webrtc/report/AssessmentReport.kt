@@ -22,14 +22,15 @@ object EvidenceFormatting {
 
 object AssessmentReport {
     fun markdown(config: AssessmentConfig, outcomes: List<TestOutcome>, evidence: Boolean = false): String = buildString {
-        appendLine("## Assessment registry and outcomes"); appendLine()
-        appendLine("One row per requirement and target. Execution and security outcomes are separate. Missing adapters and prerequisites are not completed tests.")
+        appendLine("## Security checks and outcomes"); appendLine()
+        appendLine("Checks with extension backends and recorded results. Execution and security outcomes are separate; missing prerequisites are not completed tests.")
         appendLine("Engagement: ${EvidenceFormatting.markdown(config.engagementId)}"); appendLine()
         appendLine("| Test | Execution path | Result / security | Target / limitation |")
         appendLine("| --- | --- | --- | --- |")
-        for (definition in TestRegistry.definitions) {
+        val available = TestRegistry.executable(config)
+        for (definition in TestRegistry.definitions.filter { it.id in available || outcomes.any { o -> o.testId == it.id && o.engagementId == config.engagementId } }) {
             val history = outcomes.filter { it.testId == definition.id && it.engagementId == config.engagementId }
-            if (history.isEmpty()) appendLine("| ${definition.id} ${EvidenceFormatting.markdown(definition.title)} | ${TestRegistry.capability(definition.id, config)} | Not tested | ${if (definition.id in config.selectedTests) "Selected" else "Not selected"} |")
+            if (history.isEmpty()) appendLine("| ${definition.id} ${EvidenceFormatting.markdown(TestRegistry.description(definition.id))} | ${TestRegistry.capability(definition.id, config)} | Not tested | Available in Security checks |")
             else for ((target, runs) in history.groupBy { it.target }) {
                 val latest = runs.maxBy { it.endedAt }
                 val previous = runs.sortedBy { it.endedAt }.dropLast(1).lastOrNull()

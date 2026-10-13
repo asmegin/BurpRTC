@@ -23,7 +23,8 @@ object HelpUi {
         JButton("?").apply {
             margin = Insets(0, 5, 0, 5)
             toolTipText = "What is \"$title\"?"
-            isFocusable = false
+            accessibleContext.accessibleName = "Help: $title"
+            UiKit.quiet(this)
             addActionListener { show(this, title, plain, example) }
         }
 

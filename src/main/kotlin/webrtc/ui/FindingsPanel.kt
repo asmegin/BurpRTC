@@ -28,50 +28,36 @@ class FindingsPanel(
     private val outcomeStore: webrtc.assessment.OutcomeStore? = null
 ) : JPanel(BorderLayout()) {
 
-    private val report = JTextArea().apply {
-        isEditable = false
-        lineWrap = false
-        font = java.awt.Font(java.awt.Font.MONOSPACED, java.awt.Font.PLAIN, 12)
-    }
+    private val report = SearchableTextPane("Report preview").apply { text = "Click Generate report to review the current findings and test outcomes.\n\nUse the target filter to limit the report to a specific host or URL." }
+    private var generated = false
     private val status = JLabel(" ")
     private val targetFilter = JTextField(24)
     private val fullEvidence = JCheckBox("Include full evidence and configuration", true)
 
     init {
-        val intro = JTextArea(
-            "Concise pentest report: findings, affected targets, observed security facts and short test outcomes. " +
-                "Repeated telemetry is consolidated. Full requests, SDP, certificates and raw JSON stay in Telemetry. " +
-                "Markdown and CSV export the same concise information."
-        ).apply {
-            isEditable = false; lineWrap = true; wrapStyleWord = true; isOpaque = false
-            border = BorderFactory.createEmptyBorder(8, 10, 4, 10)
-            font = UIManager.getFont("Label.font")
-        }
-
-        val buttons = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-            add(JLabel("Target contains:")); add(targetFilter)
-            add(fullEvidence)
-            add(JButton("Generate report").apply { addActionListener { generate() } })
-            add(JButton("Export summary (CSV)…").apply { addActionListener { exportCsv() } })
-            add(JButton("Save report…").apply { addActionListener { save() } })
-            add(JButton("Clear").apply { addActionListener { report.text = ""; status.text = " " } })
-            add(status)
-        }
+        val options = UiKit.toolbar(JLabel("Target contains:"), targetFilter, fullEvidence)
+        targetFilter.toolTipText = "Blank includes all targets. Enter part of a host or URL to filter."
+        val buttons = UiKit.toolbar(UiKit.primary(JButton("Generate report").apply { addActionListener { generate() } }),
+            JButton("Save Markdown…").apply { addActionListener { save() } },
+            JButton("Export summary CSV…").apply { addActionListener { exportCsv() } },
+            UiKit.quiet(JButton("Clear preview").apply { addActionListener { report.text = ""; generated = false; status.text = " " } }))
         add(JPanel(BorderLayout()).apply {
-            add(intro, BorderLayout.NORTH)
+            add(options, BorderLayout.NORTH)
             add(buttons, BorderLayout.SOUTH)
         }, BorderLayout.NORTH)
-        add(JScrollPane(report), BorderLayout.CENTER)
+        add(report, BorderLayout.CENTER)
+        status.putClientProperty("webrtc.role", "muted"); status.preferredSize = java.awt.Dimension(0, 30)
+        add(status, BorderLayout.SOUTH)
     }
 
     private fun generate() {
         report.text = buildReport()
-        report.caretPosition = 0
+        generated = true
         status.text = "report generated"
     }
 
     private fun save() {
-        if (report.text.isBlank()) generate()
+        if (!generated || report.text.isBlank()) generate()
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
         val chooser = JFileChooser().apply {
             selectedFile = File("webrtc-findings-$stamp.md")

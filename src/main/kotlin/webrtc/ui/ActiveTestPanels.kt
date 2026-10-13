@@ -28,14 +28,45 @@ private fun followJobStatus(telemetry: TelemetryTableModel, status: JLabel, curr
 
 private class TestForm : JPanel(GridBagLayout()) {
     private var row = 0
+    private var advancedRow = 0
+    private val advanced = JPanel(GridBagLayout())
     fun field(label: String, component: JComponent, help: JButton? = null) {
-        val r = row++
-        val c = GridBagConstraints().apply { insets = Insets(3, 6, 3, 6); fill = GridBagConstraints.HORIZONTAL; anchor = GridBagConstraints.WEST; gridy = r }
-        add(JLabel(label), c)
+        addField(this, row++, label, component, help)
+    }
+    fun advancedField(label: String, component: JComponent, help: JButton? = null) = addField(advanced, advancedRow++, label, component, help)
+    fun finishAdvanced(title: String) {
+        if (advancedRow == 0) return
+        add(UiKit.disclosure(title, advanced), GridBagConstraints().apply {
+            gridy = row++; gridx = 0; gridwidth = 3; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = Insets(10, 6, 6, 6)
+        })
+    }
+    private fun addField(panel: JPanel, r: Int, label: String, component: JComponent, help: JButton?) {
+        val c = GridBagConstraints().apply { insets = Insets(7, 6, 7, 6); fill = GridBagConstraints.HORIZONTAL; anchor = GridBagConstraints.WEST; gridy = r }
+        if (label.isEmpty() && component is JLabel) {
+            c.gridwidth = 3; c.weightx = 1.0
+            panel.add(UiKit.note(component.text), c); return
+        }
+        panel.add(JLabel(label).apply { labelFor = component }, c)
         c.gridx = 1; c.weightx = 1.0
-        add(component, c)
+        component.accessibleContext.accessibleName = label.ifBlank { component.accessibleContext.accessibleName }
+        if (component is JComboBox<*>) component.minimumSize = java.awt.Dimension(160, 32)
+        panel.add(component, c)
         c.gridx = 2; c.weightx = 0.0; c.fill = GridBagConstraints.NONE
-        add(help ?: JLabel(" "), c)
+        panel.add(help ?: JLabel(" "), c)
+    }
+}
+
+private fun statusBar(status: JLabel) = JPanel(BorderLayout()).apply {
+    status.putClientProperty("webrtc.role", "muted")
+    status.preferredSize = java.awt.Dimension(0, 30)
+    add(status)
+}
+
+private fun saveSettings(parent: JPanel, status: JLabel, save: () -> Unit) = JButton("Save settings").apply {
+    toolTipText = "Save these inputs for manual runs and Scan All."
+    addActionListener {
+        runCatching(save).onSuccess { status.text = "Settings saved for Scan All and manual runs" }
+            .onFailure { JOptionPane.showMessageDialog(parent, it.message, "Settings not saved", JOptionPane.ERROR_MESSAGE) }
     }
 }
 
@@ -43,7 +74,7 @@ class DataChannelFuzzPanel(
     private val store: ConfigStore, private val controller: ActiveTestController, telemetry: TelemetryTableModel
 ) : JPanel(BorderLayout()) {
     private data class Target(val agent: String, val channel: String, val text: String) { override fun toString() = text }
-    private val target = JComboBox<Target>()
+    private val target = JComboBox<Target>().apply { putClientProperty("webrtc.emptyText", "No open channels · start a call on an injected page") }
     private val modes = listOf("text", "hex", "json", "boundary")
     private val mode = JComboBox(arrayOf("Custom text (UTF-8)", "Custom binary (hex)", "JSON edge cases", "Text size boundaries"))
     private val payload = JTextArea(3, 40)
@@ -55,6 +86,7 @@ class DataChannelFuzzPanel(
     private var updatingArm = false
     private var lastAutomaticJob: String? = null
     private val status = JLabel("Start a DataChannel in the browser, then refresh the list.")
+    private val runButton = UiKit.primary(JButton("Run payloads").apply { addActionListener { runTest() } })
     private var currentJob: String? = null
 
     init {
@@ -78,15 +110,15 @@ class DataChannelFuzzPanel(
                 "The message body used by the Custom text and Custom binary modes (ignored by the JSON and boundary modes, which generate their own). Text is sent as UTF-8; binary is entered as pairs of hex digits, whitespace allowed.",
                 "Text: hello from the test suite\nHex:  48 65 6c 6c 6f"
             ))
-            field("Messages:", count, HelpUi.button(
+            advancedField("Messages:", count, HelpUi.button(
                 "Messages",
                 "How many messages to send in this run (1–50). Combined with Interval, this controls burst size and rate — useful for flood / rate-limit testing without overwhelming the browser."
             ))
-            field("Interval (ms):", interval, HelpUi.button(
+            advancedField("Interval (ms):", interval, HelpUi.button(
                 "Interval (ms)",
                 "Delay between messages, 100–1000 ms. Larger values are gentler; smaller values approximate a burst. The whole run is still capped at 1 MiB total."
             ))
-            field("Maximum bytes/message:", maxBytes, HelpUi.button(
+            advancedField("Maximum bytes/message:", maxBytes, HelpUi.button(
                 "Maximum bytes per message",
                 "Per-message size cap (1–65,536 bytes). The suite refuses payloads larger than this and caps each run at 1 MiB total, so a fuzz run can't hang the browser. Use a large value to probe how the peer handles oversized frames."
             ))
@@ -94,25 +126,29 @@ class DataChannelFuzzPanel(
                 "Stop on first send error",
                 "When on, the run halts as soon as a send fails (for example the channel closed). When off, it keeps trying the remaining messages. A send succeeding only means the local browser accepted it for sending — it does not prove the remote peer processed it."
             ))
-            field("", nextOpen, HelpUi.button(
+            advancedField("", nextOpen, HelpUi.button(
                 "Run on next DataChannel open",
                 "Arm one automatic M4 run using the settings currently shown. The next channel that actually reaches open on any allow-listed, in-scope page requests the run immediately, without waiting for the three-second poll. Local means created locally, not open. Channels that close while connecting cannot send test messages.",
                 "Set the payload and limits, tick this option, then start a fresh call. It disarms after one run is queued. A busy page leaves it armed for another open event. Uncheck or press Stop to disarm and cancel the automatic run. Reload the browser page after updating the extension."
             ))
             field("", JLabel("Each run is limited to 1 MiB. Send acceptance does not prove peer processing."))
+            finishAdvanced("Limits & run on next open")
         }
         val controls = JPanel(BorderLayout()).apply {
-            add(form, BorderLayout.CENTER)
+            preferredSize = java.awt.Dimension(800, 400)
+            add(UiKit.scroll(form), BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(JButton("Refresh channels").apply { addActionListener { refresh() } })
-                add(JButton("Run").apply { addActionListener { runTest() } })
+                add(runButton)
                 add(JButton("Stop").apply { addActionListener {
                     controller.disarmNextOpenFuzz()
                     controller.cancelJob(currentJob.orEmpty())
                     refresh()
                     status.text = "Automatic run disarmed; stop requested for any current test"
                 } })
-                add(status)
+                add(saveSettings(this@DataChannelFuzzPanel, status) {
+                    val cfg = settings(); cfg.validate(); store.save(store.config.copy(dataChannelFuzz = cfg))
+                })
+                add(UiKit.quiet(JButton("Refresh channels").apply { addActionListener { refresh() } }))
             }, BorderLayout.SOUTH)
         }
         nextOpen.addActionListener {
@@ -133,11 +169,14 @@ class DataChannelFuzzPanel(
                 JOptionPane.showMessageDialog(this, e.message, "DataChannel test", JOptionPane.ERROR_MESSAGE)
             }
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), TestResultsPanel(telemetry, "fuzz-.*|pc-state|sdp-error|dc-(created|state|send|recv)", "dc-fuzz")).apply { resizeWeight = 0.4 })
-        Timer(2000) { refresh() }.apply { isRepeats = true; start() }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, controls, TestResultsPanel(telemetry, "fuzz-.*|pc-state|sdp-error|dc-(created|state|send|recv)", "dc-fuzz")).apply { resizeWeight = 0.35; dividerLocation = 400 })
+        add(statusBar(status), BorderLayout.SOUTH)
+        refresh()
+        UiKit.refreshWhileShowing(this) { refresh() }
     }
 
     private fun refresh() {
+        if (target.isPopupVisible) return
         updatingArm = true
         nextOpen.isSelected = controller.nextOpenFuzzArmed()
         updatingArm = false
@@ -151,6 +190,8 @@ class DataChannelFuzzPanel(
             target.addItem(Target(agent.id, channel.id, "${agent.id.takeLast(8)} ${channel.pc}/${channel.id} ${channel.label} | ${agent.frame}"))
         } }
         (0 until target.itemCount).firstOrNull { target.getItemAt(it).let { item -> item.agent == previous?.agent && item.channel == previous?.channel } }?.let { target.selectedIndex = it }
+        runButton.isEnabled = target.itemCount > 0
+        runButton.toolTipText = if (target.itemCount == 0) "Open a data channel on an injected page to run payloads." else "Send the selected payloads."
         if (controller.nextOpenFuzzArmed()) status.text = "Armed for the next open channel · ${target.itemCount} open now"
         else if (currentJob == null) status.text = "${target.itemCount} open channel(s) · local creation does not mean open"
     }
@@ -174,17 +215,18 @@ class DataChannelFuzzPanel(
 class SdpFuzzPanel(
     private val store: ConfigStore, private val controller: ActiveTestController, telemetry: TelemetryTableModel
 ) : JPanel(BorderLayout()) {
-    private val target = JComboBox<ActiveTestController.Agent>()
+    private val target = JComboBox<ActiveTestController.Agent>().apply { putClientProperty("webrtc.emptyText", "No live pages · enable the agent and browse the target") }
     private val descriptionType = JComboBox(arrayOf("offer", "answer"))
     private val maxCases = JSpinner(SpinnerNumberModel(300, 1, 500, 1))
     private val status = JLabel("Live pages update automatically.")
+    private val runButton = UiKit.primary(JButton("Run SDP fuzzing").apply { addActionListener { runTest() } })
     private var currentJob: String? = null
 
     init {
         followJobStatus(telemetry, status) { currentJob }
         val saved = store.config.sdpFuzz
         descriptionType.selectedItem = saved.descriptionType
-        maxCases.value = maxOf(saved.maxCases, 300)
+        maxCases.value = saved.maxCases
         val form = TestForm().apply {
             field("Browser page:", target, HelpUi.button(
                 "Browser page",
@@ -202,24 +244,33 @@ class SdpFuzzPanel(
             field("", JLabel("No packets are sent. Accepted offers also run createAnswer as a follow-up; this is stronger triage, not proof of a vulnerability. A timeout or agent disconnect needs manual browser review."))
         }
         val controls = JPanel(BorderLayout()).apply {
-            add(form, BorderLayout.CENTER)
+            preferredSize = java.awt.Dimension(800, 245)
+            add(UiKit.scroll(form), BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(JButton("Run").apply { addActionListener { runTest() } })
+                add(runButton)
                 add(JButton("Stop").apply { addActionListener {
                     status.text = if (controller.cancelJob(currentJob.orEmpty())) "Stop requested" else "No active test from this panel"
                 } })
-                add(status)
+                add(saveSettings(this@SdpFuzzPanel, status) {
+                    val cfg = SdpFuzzConfig(descriptionType.selectedItem as String, maxCases.value as Int)
+                    cfg.validate(); store.save(store.config.copy(sdpFuzz = cfg))
+                })
             }, BorderLayout.SOUTH)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), TestResultsPanel(telemetry, "sdp-fuzz-.*", "sdp-fuzz")).apply { resizeWeight = 0.4 })
-        Timer(2000) { refresh() }.apply { isRepeats = true; start() }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, controls, TestResultsPanel(telemetry, "sdp-fuzz-.*", "sdp-fuzz")).apply { resizeWeight = 0.35; dividerLocation = 245 })
+        add(statusBar(status), BorderLayout.SOUTH)
+        refresh()
+        UiKit.refreshWhileShowing(this) { refresh() }
     }
 
     private fun refresh() {
+        if (target.isPopupVisible) return
         val previous = (target.selectedItem as? ActiveTestController.Agent)?.id
         target.removeAllItems()
         controller.agents().forEach { target.addItem(it) }
         (0 until target.itemCount).firstOrNull { target.getItemAt(it).id == previous }?.let { target.selectedIndex = it }
+        runButton.isEnabled = target.itemCount > 0
+        runButton.toolTipText = if (target.itemCount == 0) "Enable the agent in Setup, then load an allowed page through Burp." else "Run parser tests on this page."
         if (currentJob == null) status.text = "${target.itemCount} live page(s) · updating automatically"
     }
 
@@ -239,13 +290,14 @@ class SdpFuzzPanel(
 class IceProbePanel(
     private val store: ConfigStore, private val controller: ActiveTestController, telemetry: TelemetryTableModel
 ) : JPanel(BorderLayout()) {
-    private val target = JComboBox<ActiveTestController.Agent>()
+    private val target = JComboBox<ActiveTestController.Agent>().apply { putClientProperty("webrtc.emptyText", "No live pages · enable the agent and browse the target") }
     private val url = JTextField(40)
     private val username = JTextField(24)
-    private val credential = JPasswordField(24)
+    private val credential = JTextField(24)
     private val policy = JComboBox(arrayOf("all", "relay"))
     private val timeout = JSpinner(SpinnerNumberModel(10, 3, 30, 1))
     private val status = JLabel("Live pages update automatically.")
+    private val runButton = UiKit.primary(JButton("Gather candidates").apply { addActionListener { runTest() } })
     private var currentJob: String? = null
 
     init {
@@ -273,49 +325,57 @@ class IceProbePanel(
                 "Password/secret paired with the TURN username. Stored in the Burp project file and preserved in telemetry, commands, exports and reports, so you can copy complete evidence — remove it from screenshots yourself if needed.",
                 "The HMAC or shared secret issued by the app for its TURN server."
             ))
-            field("ICE transport policy:", policy, HelpUi.button(
+            advancedField("ICE transport policy:", policy, HelpUi.button(
                 "ICE transport policy",
                 "'all' gathers every candidate type (host, srflx, relay). 'relay' forces the browser to use only TURN relay candidates, which proves whether the TURN server actually issues a relay allocation for your credentials — an open-relay / credential-abuse test. 'relay' requires a TURN URI."
             ))
-            field("Timeout (seconds):", timeout, HelpUi.button(
+            advancedField("Timeout (seconds):", timeout, HelpUi.button(
                 "Timeout (seconds)",
                 "How long (3–30s) to wait for candidate gathering before closing the throwaway peer. Raise it on slow networks; lower it to fail fast when a server is unreachable."
             ))
             field("", JLabel("Blank URI gathers host candidates only. TURN relay policy checks allocation, not end-to-end relay traffic."))
             field("", JLabel("ICE traffic leaves the browser directly. The server host and port must be in Burp Target scope."))
+            finishAdvanced("Gathering options")
         }
         val controls = JPanel(BorderLayout()).apply {
-            add(form, BorderLayout.CENTER)
+            preferredSize = java.awt.Dimension(800, 390)
+            add(UiKit.scroll(form), BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(JButton("Refresh pages").apply { addActionListener { refresh() } })
+                add(runButton)
+                add(JButton("Stop").apply { addActionListener {
+                    status.text = if (controller.cancelJob(currentJob.orEmpty())) "Stop requested" else "No active test from this panel"
+                } })
+                add(saveSettings(this@IceProbePanel, status) { val cfg = settings(); cfg.validate(); store.save(store.config.copy(iceProbe = cfg)) })
                 add(JButton("Show scope URL").apply { addActionListener {
                     runCatching { url.text.trim().takeIf { it.isNotEmpty() }?.let { IceEndpoint.parse(it).scopeUrl } ?: "No server: host candidates only" }
                         .onSuccess { JOptionPane.showMessageDialog(this@IceProbePanel, it, "ICE endpoint scope", JOptionPane.INFORMATION_MESSAGE) }
                         .onFailure { JOptionPane.showMessageDialog(this@IceProbePanel, it.message, "ICE URI", JOptionPane.ERROR_MESSAGE) }
                 } })
-                add(JButton("Gather candidates").apply { addActionListener { runTest() } })
-                add(JButton("Stop").apply { addActionListener {
-                    status.text = if (controller.cancelJob(currentJob.orEmpty())) "Stop requested" else "No active test from this panel"
-                } })
-                add(status)
             }, BorderLayout.SOUTH)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), TestResultsPanel(telemetry, "ice-probe-.*", "ice-probe")).apply { resizeWeight = 0.4 })
-        Timer(2000) { refresh() }.apply { isRepeats = true; start() }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, controls, TestResultsPanel(telemetry, "ice-probe-.*", "ice-probe")).apply { resizeWeight = 0.35; dividerLocation = 390 })
+        add(statusBar(status), BorderLayout.SOUTH)
+        refresh()
+        UiKit.refreshWhileShowing(this) { refresh() }
     }
 
     private fun refresh() {
+        if (target.isPopupVisible) return
         val previous = (target.selectedItem as? ActiveTestController.Agent)?.id
         target.removeAllItems()
         controller.agents().forEach { target.addItem(it) }
         (0 until target.itemCount).firstOrNull { target.getItemAt(it).id == previous }?.let { target.selectedIndex = it }
+        runButton.isEnabled = target.itemCount > 0
+        runButton.toolTipText = if (target.itemCount == 0) "Enable the agent in Setup, then load an allowed page through Burp." else "Gather candidates on this page."
         if (currentJob == null) status.text = "${target.itemCount} live page(s) · updating automatically"
     }
+
+    private fun settings() = IceProbeConfig(url.text.trim(), username.text, credential.text, policy.selectedItem as String, timeout.value as Int)
 
     private fun runTest() {
         try {
             val selected = target.selectedItem as? ActiveTestController.Agent ?: error("Refresh and select a live browser page")
-            val cfg = IceProbeConfig(url.text.trim(), username.text, String(credential.password), policy.selectedItem as String, timeout.value as Int)
+            val cfg = settings()
             cfg.validate()
             store.save(store.config.copy(iceProbe = cfg))
             val id = controller.queueIce(selected.id, cfg)
@@ -328,30 +388,26 @@ class IceProbePanel(
 /**
  * T8 — opt-in, bounded local renegotiation / ICE-restart loop. It drives only the
  * page's own `createOffer`/`setLocalDescription`; nothing is sent to the signaling
- * server. Run All will not start it unless the confirmation below is saved on.
+ * server. Clicking Run or selecting it in Scan All explicitly starts this bounded test.
  */
 class SignalingFloodPanel(
     private val store: ConfigStore, private val controller: ActiveTestController, telemetry: TelemetryTableModel
 ) : JPanel(BorderLayout()) {
-    private val target = JComboBox<ActiveTestController.Agent>()
-    private val confirm = JCheckBox("Enable this test (required for Run All to include it)")
+    private val target = JComboBox<ActiveTestController.Agent>().apply { putClientProperty("webrtc.emptyText", "No live pages · enable the agent and browse the target") }
     private val count = JSpinner(SpinnerNumberModel(5, 1, 20, 1))
     private val interval = JSpinner(SpinnerNumberModel(1000, 500, 5000, 500))
     private val status = JLabel("Live pages update automatically.")
+    private val runButton = UiKit.primary(JButton("Run negotiation loop").apply { addActionListener { runTest() } })
     private var currentJob: String? = null
 
     init {
         followJobStatus(telemetry, status) { currentJob }
         val saved = store.config.signalingFlood
-        confirm.isSelected = saved.confirm; count.value = saved.count; interval.value = saved.intervalMs
+        count.value = saved.count; interval.value = saved.intervalMs
         val form = TestForm().apply {
             field("Browser page:", target, HelpUi.button(
                 "Browser page",
                 "The live agent (browser page) that will run the loop. It creates a throwaway RTCPeerConnection and repeatedly calls createOffer/setLocalDescription with ICE restart, exercising the page's own negotiation path. The list updates automatically."
-            ))
-            field("", confirm, HelpUi.button(
-                "Enable signaling/ICE-restart flood",
-                "Off by default. This is an opt-in, bounded active test: it repeatedly renegotiates a throwaway peer to observe ICE-credential rotation and local negotiation behaviour. It sends nothing to the signaling server. Run All only includes it when this is ticked; otherwise it reports that it was skipped."
             ))
             field("Renegotiations:", count, HelpUi.button(
                 "Renegotiations",
@@ -364,32 +420,40 @@ class SignalingFloodPanel(
             field("", JLabel("Local renegotiation only — nothing is sent to the signaling server. Reused ICE credentials across restarts are reported."))
         }
         val controls = JPanel(BorderLayout()).apply {
-            add(form, BorderLayout.CENTER)
+            preferredSize = java.awt.Dimension(800, 245)
+            add(UiKit.scroll(form), BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-                add(JButton("Refresh pages").apply { addActionListener { refresh() } })
-                add(JButton("Run").apply { addActionListener { runTest() } })
+                add(runButton)
                 add(JButton("Stop").apply { addActionListener {
                     status.text = if (controller.cancelJob(currentJob.orEmpty())) "Stop requested" else "No active test from this panel"
                 } })
-                add(status)
+                add(saveSettings(this@SignalingFloodPanel, status) {
+                    val cfg = store.config.signalingFlood.copy(count = count.value as Int, intervalMs = interval.value as Int)
+                    cfg.copy(confirm = true).validate(); store.save(store.config.copy(signalingFlood = cfg))
+                })
             }, BorderLayout.SOUTH)
         }
-        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, JScrollPane(controls), TestResultsPanel(telemetry, "flood-.*|signaling-flood-.*", "signaling-flood")).apply { resizeWeight = 0.4 })
-        Timer(2000) { refresh() }.apply { isRepeats = true; start() }
+        add(JSplitPane(JSplitPane.VERTICAL_SPLIT, controls, TestResultsPanel(telemetry, "flood-.*|signaling-flood-.*", "signaling-flood")).apply { resizeWeight = 0.35; dividerLocation = 245 })
+        add(statusBar(status), BorderLayout.SOUTH)
+        refresh()
+        UiKit.refreshWhileShowing(this) { refresh() }
     }
 
     private fun refresh() {
+        if (target.isPopupVisible) return
         val previous = (target.selectedItem as? ActiveTestController.Agent)?.id
         target.removeAllItems()
         controller.agents().forEach { target.addItem(it) }
         (0 until target.itemCount).firstOrNull { target.getItemAt(it).id == previous }?.let { target.selectedIndex = it }
+        runButton.isEnabled = target.itemCount > 0
+        runButton.toolTipText = if (target.itemCount == 0) "Enable the agent in Setup, then load an allowed page through Burp." else "Run a bounded local negotiation loop."
         if (currentJob == null) status.text = "${target.itemCount} live page(s) · updating automatically"
     }
 
     private fun runTest() {
         try {
             val selected = target.selectedItem as? ActiveTestController.Agent ?: error("Refresh and select a live browser page")
-            val cfg = SignalingFloodConfig(confirm.isSelected, count.value as Int, interval.value as Int)
+            val cfg = SignalingFloodConfig(true, count.value as Int, interval.value as Int)
             cfg.validate()
             store.save(store.config.copy(signalingFlood = cfg))
             val id = controller.queueSignalingFlood(selected.id, cfg)

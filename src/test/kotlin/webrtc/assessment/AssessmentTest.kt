@@ -11,15 +11,29 @@ class AssessmentTest {
         assertEquals(TestRegistry.definitions.size, TestRegistry.byId.size)
         assertTrue(TestRegistry.definitions.all { it.contract.isNotBlank() && it.title.isNotBlank() })
     }
-    @Test fun `executable set covers only tests with a ready automated backend`() {
-        // Drives Run All's "everything automatic" path when nothing is curated.
-        val cfg = AssessmentConfig()
-        val exec = TestRegistry.executable(cfg)
-        assertEquals(TestRegistry.passiveTests + TestRegistry.protocolTests, exec)
-        assertFalse("SIG-07" in exec) // paired/manual backlog item has no adapter
-        assertTrue(exec.all { TestRegistry.capability(it, cfg) in setOf("Passive analysis", "Bundled TURN runner") })
-        // A test gains executability once a scenario is configured for it.
-        assertFalse("SIG-02" in exec)
+    @Test fun `only zero-config checks are offered and peer-dependent TURN tests are excluded`() {
+        // Drives both the Assessment tab and Run All's automatic path.
+        val auto = TestRegistry.automaticTests
+        assertEquals(TestRegistry.passiveTests + TestRegistry.automaticProtocolTests, auto)
+        assertEquals(TestRegistry.passiveTests + TestRegistry.protocolTests, TestRegistry.executable())
+        assertTrue(setOf("TRN-04", "TRN-05").all { it in TestRegistry.executable() })
+        // A second allocation on the same server is the receiving peer, so no echo host is needed.
+        assertTrue("TRN-04" in auto)
+        assertTrue("TRN-05" in auto)
+        assertFalse("SIG-02" in auto) // needs a recorded scenario
+        assertFalse("SIG-07" in auto) // manual / paired backlog, no adapter
+        assertTrue(auto.all { TestRegistry.capability(it, AssessmentConfig()) in setOf("Passive analysis", "Built-in TURN runner") })
+    }
+    @Test fun `configured scenarios gain an execution row and manual backlog items do not`() {
+        val step = ScenarioStep("control", "https://app.test/", assertion = Assertion("/body", JsonPrimitive("private")))
+        val scenario = Scenario("auth", "SIG-02", "Authentication", "private response", control = listOf(step), cases = listOf(ScenarioCase("absent", listOf(step))))
+        assertFalse("SIG-02" in TestRegistry.executable())
+        assertTrue("SIG-02" in TestRegistry.executable(AssessmentConfig(scenarios = listOf(scenario))))
+        assertFalse("SIG-07" in TestRegistry.executable())
+        val report = webrtc.report.AssessmentReport.markdown(AssessmentConfig(), emptyList())
+        assertContains(report, "TRN-04")
+        assertFalse(report.contains("SIG-07"))
+        assertFalse(report.contains("Selected"))
     }
     @Test fun `status and upgrade acceptance cannot masquerade as protected effects`() {
         val step = ScenarioStep("get", "https://app.test/", assertion = Assertion("/status", JsonPrimitive(200)))

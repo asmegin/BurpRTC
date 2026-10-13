@@ -161,7 +161,9 @@ class BridgeServer(
         "dc-created" -> "${obj.strOr("label", "")} ${obj.strOr("detail", "")} (${obj.strOr("state", "unknown")})"
         "assessment-result", "signaling-observation", "ws-connection", "ws-binary", "ws-closed", "original-policy",
         "pc-config", "pc-operation", "ice-input", "getUserMedia-result", "browser-capabilities", "capture-result", "track-state",
-        "dc-state", "pc-state", "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error" -> obj.strOr("detail", "")
+        "dc-state", "pc-state", "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error",
+        "getDisplayMedia", "enumerateDevices-result", "browser-checks-error", "message-listener", "message-received", "message-sent",
+        "xss-canary-fired", "xss-canary-reflected", "collaborator-interaction", "burp-issue" -> obj.strOr("detail", "")
         "getUserMedia" -> obj.strOr("constraints", "")
         "stats-snapshot" -> {
             val rtp = (obj["rtp"] as? kotlinx.serialization.json.JsonArray)?.size ?: 0

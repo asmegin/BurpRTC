@@ -52,6 +52,8 @@ object RtcDecoder {
 }
 
 class RtcCapture(private val config: ConfigStore, private val scope: ScopeGate, private val telemetry: TelemetryTableModel) : WebSocketCreatedHandler {
+    var sessions: webrtc.authz.SessionCatalog? = null
+    var canaries: webrtc.canary.CanaryRegistry? = null
     private fun allowed(url: String) = runCatching {
         ScopeGate.hostAllowed(java.net.URI(url).host, config.config.hostAllowList) && scope.inScope(url)
     }.getOrDefault(false)
@@ -80,13 +82,19 @@ class RtcCapture(private val config: ConfigStore, private val scope: ScopeGate, 
         val req = created.upgradeRequest(); val url = req.url()
         if (!allowed(url)) return
         val connection = UUID.randomUUID().toString()
+        val sessionId = sessions?.observe(req, source = "WebSocket handshake")
         val protocol = req.headerValue("Sec-WebSocket-Protocol").orEmpty()
         record("ws-connection", url, "WebSocket connection $connection", buildJsonObject {
             put("connectionId", connection); put("upgrade", req.toString()); put("origin", req.headerValue("Origin").orEmpty()); put("subprotocol", protocol)
         })
         created.webSocket().registerMessageHandler(object : MessageHandler {
             override fun handleTextMessage(message: TextMessage): TextMessageAction {
-                if (allowed(url)) decode(url, connection, message.payload(), protocol, message.direction().toString())
+                if (allowed(url)) {
+                    sessions?.observeXmpp(sessionId, url, message.payload(), connection)
+                    decode(url, connection, message.payload(), protocol, message.direction().toString())
+                    if (message.direction().toString().startsWith("SERVER"))
+                        canaries?.scan(message.payload(), url, "WebSocket message to the browser")
+                }
                 return TextMessageAction.continueWith(message)
             }
             override fun handleBinaryMessage(message: BinaryMessage): BinaryMessageAction {

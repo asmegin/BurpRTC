@@ -24,17 +24,39 @@ class InjectorHandler(
     private val configStore: ConfigStore,
     private val scope: ScopeGate,
     private val requests: RequestCatalog? = null,
-    private val capture: webrtc.workflow.RtcCapture? = null
+    private val capture: webrtc.workflow.RtcCapture? = null,
+    private val sessions: webrtc.authz.SessionCatalog? = null,
+    private val links: webrtc.authz.LinkCatalogs? = null,
+    private val canaries: webrtc.canary.CanaryRegistry? = null
 ) : HttpHandler {
 
     private val metaCspRegex =
         Regex("(?is)<meta[^>]+http-equiv=[\"']?content-security-policy[\"']?[^>]*>")
 
-    override fun handleHttpRequestToBeSent(req: HttpRequestToBeSent): RequestToBeSentAction =
-        RequestToBeSentAction.continueWith(req)
+    override fun handleHttpRequestToBeSent(req: HttpRequestToBeSent): RequestToBeSentAction {
+        if (sessions != null && !req.toolSource().isFromTool(burp.api.montoya.core.ToolType.EXTENSIONS))
+            runCatching { sessions?.observe(req) }
+        return RequestToBeSentAction.continueWith(req)
+    }
 
     override fun handleHttpResponseReceived(resp: HttpResponseReceived): ResponseReceivedAction {
         val cfg = configStore.config
+        if ((sessions != null || requests != null || links != null) && !resp.toolSource().isFromTool(burp.api.montoya.core.ToolType.EXTENSIONS))
+            runCatching {
+                val req = resp.initiatingRequest()
+                val sessionId = sessions?.observe(req, resp.headerValue("Content-Type").orEmpty(), resp.statusCode().toInt())
+                links?.observe(req, resp.headerValue("Content-Type").orEmpty(), resp.statusCode().toInt(),
+                    resp.headerValue("Content-Disposition").orEmpty(), sessionId)
+                val host = java.net.URI(req.url()).host
+                if (host != null && ScopeGate.hostAllowed(host, cfg.hostAllowList) && scope.inScope(req.url()))
+                    requests?.observe(req, resp.headerValue("Content-Type").orEmpty(), resp.statusCode().toInt())
+            }
+        canaries?.let { registry -> runCatching {
+            val url = resp.initiatingRequest().url()
+            val host = java.net.URI(url).host
+            if (host != null && ScopeGate.hostAllowed(host, cfg.hostAllowList) && scope.inScope(url))
+                registry.scan(resp.bodyToString(), url, "HTTP response")
+        } }
         capture?.let { observer -> runCatching {
             val original = kotlinx.serialization.json.buildJsonArray {
                 resp.headers().forEach { header -> add(kotlinx.serialization.json.buildJsonObject {
@@ -53,7 +75,6 @@ class InjectorHandler(
         if (!scope.inScope(url)) return ResponseReceivedAction.continueWith(resp)
 
         val contentType = resp.headerValue("Content-Type") ?: ""
-        requests?.observe(request, contentType, resp.statusCode().toInt())
         if (!contentType.contains("text/html", ignoreCase = true)) {
             return ResponseReceivedAction.continueWith(resp)
         }

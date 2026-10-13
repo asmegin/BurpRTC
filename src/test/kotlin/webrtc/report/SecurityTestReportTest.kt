@@ -20,7 +20,7 @@ class SecurityTestReportTest {
         assertTrue(sections.all { it.results.isNotEmpty() })
         assertFalse(sections.flatMap { it.results }.any { it.status in setOf(SecurityTestReport.Status.OBSERVED, SecurityTestReport.Status.COMPLETED) })
         assertTrue(section(SecurityArea.ARCHITECTURE).results.all { it.status == SecurityTestReport.Status.UNSUPPORTED })
-        assertTrue(section(SecurityArea.STORAGE).results.all { it.status == SecurityTestReport.Status.UNSUPPORTED })
+        assertTrue(section(SecurityArea.STORAGE).results.all { it.status in setOf(SecurityTestReport.Status.UNSUPPORTED, SecurityTestReport.Status.NOT_TESTED) })
         val md = SecurityTestReport.markdown(WebRtcConfig(), emptyList(), emptyList())
         SecurityArea.entries.forEachIndexed { index, area -> assertTrue(md.contains("## ${index + 1}. ${area.title}\n")) }
         assertTrue(md.contains("Neither is an overall security pass"))

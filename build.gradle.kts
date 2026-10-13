@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "webrtc.testsuite"
-version = "1.1.1"
+version = "1.2.0"
 
 repositories {
     mavenCentral()
@@ -33,8 +33,8 @@ tasks.test {
 
 tasks.processResources {
     from("agent/webrtc-agent.js") { into("agent") }
+    // Optional SSLyze engine only; STUN/TURN and scenario tests run on the JVM.
     from("runner/tls_runner.py") { into("runner") }
-    from("runner/protocol_runner.py") { into("runner") }
     val buildVersion = project.version.toString()
     inputs.property("version", buildVersion)
     filesMatching("webrtc-version.properties") { expand("version" to buildVersion) }

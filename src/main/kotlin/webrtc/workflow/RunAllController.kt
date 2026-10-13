@@ -11,6 +11,9 @@ import webrtc.config.ConfigStore
 import webrtc.config.Detectors
 import webrtc.config.IdentityProfile
 import webrtc.config.IpAddresses
+import webrtc.config.ScanModule
+import webrtc.config.ScanPlan
+import webrtc.external.ExternalInputs
 import webrtc.internals.InternalsComparator
 import webrtc.telemetry.EvidenceAnalysis
 import webrtc.telemetry.CertificateAnalyzer
@@ -23,16 +26,9 @@ import webrtc.report.SecurityTestReport
 import webrtc.report.CoverageSupport
 
 /**
- * The beginner-friendly "Run all" orchestration. It runs the checks that can be
- * run safely and automatically, in order, and reports everything in plain
- * English — including what it deliberately skipped and why.
- *
- * What it can do on its own: review the passive telemetry already collected
- * (M1/M2), and drive the live active checks (M6 ICE gather, M4 DataChannel fuzz)
- * against any browser page the agent is live on. What it cannot do on its own,
- * and therefore only guides: M3 needs a fresh negotiation started in the browser,
- * and M5 needs the tester to pick a request to replay. Nothing here invents a
- * finding — it reports what the modules actually observed.
+ * Runs the saved Scan All selection and reports real execution and missing inputs.
+ * Browser jobs, managed TLS/protocol runners and captured-request authorization
+ * replays share the same workflow. M3 arms saved rules for the next negotiation.
  */
 class RunAllController(
     private val configStore: ConfigStore,
@@ -41,7 +37,10 @@ class RunAllController(
     private val tlsRunner: TlsScanRunner? = null,
     private val authzResults: () -> List<AuthzResult> = { emptyList() },
     private val signalingEndpoints: () -> List<SignalingMetadata.Endpoint> = { emptyList() },
-    private val assessments: webrtc.assessment.AssessmentController? = null
+    private val assessments: webrtc.assessment.AssessmentController? = null,
+    private val automaticAuthz: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null,
+    private val automaticInvites: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null,
+    private val automaticArtifacts: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null
 ) {
     /** One line of the run report, tagged so the UI can format it. */
     enum class Level { HEAD, OK, INFO, WARN, FINDING, FAIL, SKIP }
@@ -57,56 +56,89 @@ class RunAllController(
     fun reset() { cancelled = false }
 
     /** Runs the whole sequence, emitting report lines through [emit]. Call off the EDT. */
-    fun run(emit: (Line) -> Unit) {
+    fun run(plan: ScanPlan = configStore.config.scanPlan, emit: (Line) -> Unit) {
         reset()
         val cfg = configStore.config
+        val currentAuthzResults = mutableListOf<AuthzResult>()
+        val selected = ScanModule.entries.filter { plan.includes(it) }
+        if (selected.isEmpty()) {
+            emit(Line(Level.SKIP, "No scans selected. Select scans in Scan All before running."))
+            return
+        }
+        emit(Line(Level.HEAD, "Selected scans"))
+        emit(Line(Level.INFO, selected.joinToString(" · ") { it.title }))
+        ScanModule.entries.filterNot { plan.includes(it) }.forEach {
+            emit(Line(Level.SKIP, "${it.title}: unchecked in Scan All; will not run."))
+        }
 
-        emit(Line(Level.HEAD, "1. Configuration (M0)"))
+        emit(Line(Level.HEAD, "1. Setup"))
         val configReady = checkConfig(emit)
 
-        emit(Line(Level.HEAD, "2. Passive telemetry review (M1 injection / M2 telemetry)"))
-        reviewTelemetry(emit)
+        if (!cancelled && plan.includes(ScanModule.PASSIVE)) {
+            emit(Line(Level.HEAD, "2. Captured evidence review"))
+            reviewTelemetry(emit)
+            emit(Line(Level.HEAD, "2b. Signaling endpoints"))
+            reviewSignaling(emit)
+            emit(Line(Level.HEAD, "2c. Browser & client security (original headers, canaries, capture, messaging)"))
+            reviewClient(telemetry.snapshot(), emit)
+        }
 
-        emit(Line(Level.HEAD, "2b. Signaling endpoint metadata (T7, passive)"))
-        reviewSignaling(emit)
-
-        emit(Line(Level.HEAD, "3. Live active checks (M6 TURN/STUN, T1 stats capture, M4 DataChannel fuzz, M3+ SDP fuzz)"))
+        emit(Line(Level.HEAD, "3. Browser tests"))
         val liveAgents = controller.agents()
         var iceRuns = 0
         var fuzzRuns = 0
         var sdpFuzzRuns = 0
         var statsCaptures = 0
-        if (!configReady) {
+        var browserChecks = 0
+        val browserSelected = listOf(ScanModule.ICE, ScanModule.STATS, ScanModule.BROWSER, ScanModule.DATA, ScanModule.SDP, ScanModule.LOCAL_FLOOD).any { plan.includes(it) }
+        if (!browserSelected) {
+            emit(Line(Level.SKIP, "No browser scans selected."))
+        } else if (!configReady) {
             emit(Line(Level.SKIP, "Configuration is not ready, so live checks were skipped. Fix the items above and run again."))
         } else if (liveAgents.isEmpty()) {
             emit(Line(Level.SKIP, "No live in-scope browser page is reporting. Browse the app through Burp and join a call, then run this again."))
         } else {
             emit(Line(Level.INFO, "${liveAgents.size} live page(s) responding; running one check at a time per page."))
-            if (!cfg.signalingFlood.confirm)
-                emit(Line(Level.SKIP, "T8 signaling/ICE-restart flood is opt-in and currently off; Run All will not start it automatically. Enable it in the Signaling Flood tab if required."))
             for (agent in liveAgents) {
                 if (cancelled) break
                 val label = agent.id.takeLast(8)
 
                 // M6 — ICE gather (host candidates only when no server is configured).
-                if (!cancelled) {
-                    runOne(emit, "M6 ICE gather on page $label",
-                        start = { controller.queueIce(agent.id, cfg.iceProbe) },
-                        budgetMs = (cfg.iceProbe.timeoutSeconds + 8) * 1000L
-                    )?.let { iceRuns++ }
+                if (!cancelled && plan.includes(ScanModule.ICE)) {
+                    val probes = if (cfg.iceProbe.url.isNotBlank()) listOf(cfg.iceProbe) else
+                        ExternalInputs.detect(cfg, telemetry.snapshot()).iceServers.asReversed()
+                            .filter { it.frame == agent.frame || it.frame.isBlank() }
+                            .flatMap { server -> server.urls.map { url -> cfg.iceProbe.copy(url = url,
+                                username = server.username.orEmpty(), credential = server.credential.orEmpty(), useObservedCredentials = false) } }
+                            .distinctBy { it.url }.take(5).ifEmpty { listOf(cfg.iceProbe) }
+                    for (probe in probes) {
+                        if (cancelled) break
+                        runOne(emit, "M6 ICE gather on page $label (${probe.url.ifBlank { "host candidates" }})",
+                            start = { controller.queueIce(agent.id, probe) },
+                            budgetMs = (probe.timeoutSeconds + 8) * 1000L
+                        )?.let { if (it == "completed") iceRuns++ }
+                    }
                 }
 
                 // T1 — force a fresh getStats snapshot for the page's live peers.
-                if (!cancelled) {
+                if (!cancelled && plan.includes(ScanModule.STATS)) {
                     runOne(emit, "T1 getStats capture on page $label",
                         start = { controller.queueCaptureStats(agent.id) },
                         budgetMs = 12000L
                     )?.let { statsCaptures++ }
                 }
 
+                // Browser permission / capture snapshot; no media is captured.
+                if (!cancelled && plan.includes(ScanModule.BROWSER)) {
+                    runOne(emit, "Browser & capture checks on page $label",
+                        start = { controller.queueBrowserChecks(agent.id) },
+                        budgetMs = 10000L
+                    )?.let { if (it == "completed") browserChecks++ }
+                }
+
                 // M4 — DataChannel fuzz on each open channel.
-                val openChannels = agent.channels.filter { it.state == "open" }
-                if (openChannels.isEmpty()) {
+                val openChannels = agent.channels.filter { plan.includes(ScanModule.DATA) && it.state == "open" }
+                if (plan.includes(ScanModule.DATA) && openChannels.isEmpty()) {
                     emit(Line(Level.SKIP, "M4 on page $label: no open DataChannel. Open/join a call that uses a DataChannel."))
                 }
                 val fuzzCfg = cfg.dataChannelFuzz
@@ -120,7 +152,7 @@ class RunAllController(
                 }
 
                 // M3+ — malformed-SDP parser fuzz (local, no packets sent).
-                if (!cancelled) {
+                if (!cancelled && plan.includes(ScanModule.SDP)) {
                     var sdpCommandId: String? = null
                     val state = runOne(emit, "M3+ SDP fuzz on page $label",
                         start = { controller.queueSdpFuzz(agent.id, cfg.sdpFuzz).also { sdpCommandId = it } },
@@ -130,49 +162,88 @@ class RunAllController(
                     sdpCommandId?.let { reportSdpCases(it, emit) }
                 }
 
-                // T8 — opt-in only; never started unless explicitly confirmed.
-                if (!cancelled && cfg.signalingFlood.confirm) {
-                    runOne(emit, "T8 signaling/ICE-restart flood on page $label",
-                        start = { controller.queueSignalingFlood(agent.id, cfg.signalingFlood) },
+                // Scan All selection authorizes the bounded local loop without a second tab switch.
+                if (!cancelled && plan.includes(ScanModule.LOCAL_FLOOD)) {
+                    runOne(emit, "T8 local negotiation / ICE-restart loop on page $label",
+                        start = { controller.queueSignalingFlood(agent.id, cfg.signalingFlood.copy(confirm = true)) },
                         budgetMs = (cfg.signalingFlood.count.toLong() * cfg.signalingFlood.intervalMs) + 10000L
                     )
                 }
             }
         }
 
-        emit(Line(Level.HEAD, "3b. TLS listener tests (Python / SSLyze)"))
-        if (!cancelled && cfg.tlsScan.includeInRunAll && tlsRunner != null) {
-            val firstSeq = telemetry.snapshot().maxOfOrNull { it.seq } ?: 0
-            val result = tlsRunner.scan(cfg.tlsScan) { cancelled }
-            emit(Line(if (result.status == "completed") Level.INFO else Level.WARN, result.detail))
-            reviewTls(telemetry.snapshot().filter { it.seq > firstSeq }, emit)
-        } else emit(Line(Level.SKIP, "TLS scans are opt-in. Select an endpoint and enable inclusion in Run All in TLS Tests."))
-
-        emit(Line(Level.HEAD, "4. SDP mutation (M3)"))
-        if (cfg.sdpMutation.enabled) {
-            emit(Line(Level.INFO, "M3 is enabled and will rewrite the next negotiation. Start a fresh call/renegotiation in the browser, then check SDP Mutation (M3) for before/after evidence."))
-        } else {
-            emit(Line(Level.SKIP, "M3 is disabled. Configure and enable a rule in SDP Mutation (M3), then start a new call — mutation cannot be triggered from here."))
+        if (!cancelled && plan.includes(ScanModule.TLS)) {
+            emit(Line(Level.HEAD, "3b. TLS listener tests (${if (cfg.tlsScan.engine == "sslyze") "SSLyze" else "built-in engine"})"))
+            when {
+                tlsRunner == null -> emit(Line(Level.SKIP, "TLS runner is unavailable."))
+                cfg.tlsScan.endpoint.isBlank() -> emit(Line(Level.SKIP, "Select a TLS endpoint in TLS tests and save it. The built-in engine needs no setup."))
+                else -> {
+                    val firstSeq = telemetry.snapshot().maxOfOrNull { it.seq } ?: 0
+                    val result = tlsRunner.scan(cfg.tlsScan) { cancelled }
+                    emit(Line(if (result.status == "completed") Level.INFO else Level.WARN, result.detail))
+                    reviewTls(telemetry.snapshot().filter { it.seq > firstSeq }, emit)
+                }
+            }
         }
 
-        emit(Line(Level.HEAD, "5. Authorization matrix (M5)"))
-        val identities = runCatching { configStore.config.identities }.getOrDefault(emptyList())
-        emit(authzGuidance(identities))
-        reviewIdentifiers(emit)
+        if (!cancelled) {
+            val rules = cfg.sdpMutation
+            val hasRules = rules.removeFingerprint || rules.removeCandidates || rules.mediaDirection != "unchanged" || rules.effectiveRules().any { it.find.isNotEmpty() }
+            val enabled = plan.includes(ScanModule.MUTATION) && hasRules && configReady
+            val current = configStore.config
+            if (current.sdpMutation.enabled != enabled) configStore.save(current.copy(sdpMutation = current.sdpMutation.copy(enabled = enabled)))
+            if (plan.includes(ScanModule.MUTATION)) {
+                emit(Line(Level.HEAD, "4. SDP rules"))
+                emit(Line(if (enabled) Level.INFO else Level.SKIP, if (enabled)
+                    "Saved M3 rules enabled. Start a fresh call / renegotiation to capture before/after evidence."
+                    else "M3 needs saved rewrite rules and ready configuration. Add rules in SDP rules; Scan All enables them."))
+            }
+        }
 
-        emit(Line(Level.HEAD, "Security checklist coverage"))
-        if (!cancelled) assessments?.let { a ->
-            // "Everything automatic": when the tester has not curated a selection in
-            // the Assessment tests tab, Run All executes every test that has a ready
-            // automated backend (passive, TURN runner, configured scenarios) instead
-            // of running nothing. An explicit selection is still honored as-is.
-            val selected = cfg.assessment.selectedTests
-            val ids = selected.ifEmpty { webrtc.assessment.TestRegistry.executable(cfg.assessment) }
-            if (selected.isEmpty())
-                emit(Line(Level.INFO, "No assessment tests selected; auto-running ${ids.size} with a ready automated backend. Curate in the Assessment tests tab to change this."))
+        if (!cancelled && plan.includes(ScanModule.AUTHZ)) {
+            emit(Line(Level.HEAD, "5. Access control"))
+            reviewIdentifiers(emit)
+            if (configReady && automaticAuthz != null) {
+                val count = automaticAuthz.invoke({ !cancelled }) { result ->
+                    currentAuthzResults += result
+                    emit(authzLine("M5", result))
+                }
+                emit(Line(if (count == 0) Level.SKIP else Level.INFO, if (count == 0)
+                    "No eligible scoped captured GET/HEAD request could run. Browse the app through Burp; select captured sessions in Access control or configure identities in Setup."
+                    else "M5 replayed $count captured request(s); full results are in Access control. Label sessions Customer / Advisor there to turn matching responses into likely violations."))
+            } else emit(authzGuidance(cfg.identities))
+        }
+
+        if (!cancelled && plan.includes(ScanModule.INVITES)) {
+            emit(Line(Level.HEAD, "5b. Meeting links"))
+            if (!configReady || automaticInvites == null) emit(Line(Level.SKIP, "Meeting-link replays need ready configuration (agent enabled, allowed hosts)."))
+            else {
+                val count = automaticInvites.invoke({ !cancelled }) { result -> currentAuthzResults += result; emit(authzLine("Link", result)) }
+                emit(Line(if (count == 0) Level.SKIP else Level.INFO, if (count == 0)
+                    "No meeting / invite link captured yet. Open an invite link (for example from the SMS or e-mail) in a browser routed through Burp."
+                    else "Tested $count meeting link(s). After the meeting ends, use Recheck links in Access control → Meeting links to test reuse and expiry."))
+            }
+        }
+
+        if (!cancelled && plan.includes(ScanModule.ARTIFACTS)) {
+            emit(Line(Level.HEAD, "5c. Documents & recordings"))
+            if (!configReady || automaticArtifacts == null) emit(Line(Level.SKIP, "Document replays need ready configuration (agent enabled, allowed hosts)."))
+            else {
+                val count = automaticArtifacts.invoke({ !cancelled }) { result -> currentAuthzResults += result; emit(authzLine("Document", result)) }
+                emit(Line(if (count == 0) Level.SKIP else Level.INFO, if (count == 0)
+                    "No document, attachment or recording download captured yet. Exchange a document in the call and download it through Burp."
+                    else "Tested $count document / recording download(s) across sessions and without credentials."))
+            }
+        }
+
+        if (!cancelled && plan.includes(ScanModule.SECURITY)) assessments?.let { a ->
+            emit(Line(Level.HEAD, "6. Security checks"))
+            val ids = webrtc.assessment.TestRegistry.executable(cfg.assessment)
+            emit(Line(Level.INFO, "Running ${ids.size} security check(s) with extension backends. Missing inputs are reported in Security checks."))
             a.run(ids = ids) { emit(Line(Level.INFO, it)) }
         }
-        val sections = SecurityTestReport.sections(cfg, telemetry.snapshot(), authzResults(), observedSignalingEndpoints())
+        emit(Line(Level.HEAD, "Recorded evidence coverage (does not start additional scans)"))
+        val sections = SecurityTestReport.sections(cfg, telemetry.snapshot(), (authzResults() + currentAuthzResults).distinct(), observedSignalingEndpoints())
         SecurityTestReport.checklist(sections).forEach { summary ->
             val level = when {
                 summary.results.any { it.status == SecurityTestReport.Status.FINDING } -> Level.FINDING
@@ -186,29 +257,30 @@ class RunAllController(
 
         emit(Line(Level.HEAD, "Summary"))
         emit(Line(if (configReady) Level.OK else Level.WARN,
-            "Config ${if (configReady) "ready" else "needs attention"} · ICE gathers: $iceRuns · Stats captures: $statsCaptures · DataChannel fuzz: $fuzzRuns · SDP fuzz: $sdpFuzzRuns"))
-        emit(Line(Level.INFO, "Review the Telemetry (M2) and per-module tabs for full evidence. Export a report from the Findings (M7) tab."))
+            "Config ${if (configReady) "ready" else "needs attention"} · ICE gathers: $iceRuns · Stats captures: $statsCaptures · Browser checks: $browserChecks · DataChannel fuzz: $fuzzRuns · SDP fuzz: $sdpFuzzRuns · Likely access violations: ${currentAuthzResults.count { it.verdict == AuthzResult.LIKELY_VIOLATION }}"))
+        emit(Line(Level.INFO, "Review the Evidence and per-module tabs for full evidence. Export a report from the Report tab."))
         if (cancelled) emit(Line(Level.WARN, "Run was stopped before finishing."))
-        else emit(Line(Level.OK, "Run all complete."))
+        else emit(Line(Level.OK, "Run all complete. Selected scans finished; review skips and incomplete results above."))
     }
 
     /**
-     * Passive report used by the Findings (M7) tab. Same config check, telemetry
+     * Passive report used by the Report tab. Same config check, telemetry
      * review and M3/M5 guidance as [run], but it never queues an active job — so a
      * report can be generated at any time without touching the target.
      */
     fun passiveReport(events: List<TelemetryEvent> = telemetry.snapshot(), emit: (Line) -> Unit) {
-        reset()
         val cfg = configStore.config
-        emit(Line(Level.HEAD, "1. Configuration (M0)"))
+        emit(Line(Level.HEAD, "1. Setup"))
         checkConfig(emit)
-        emit(Line(Level.HEAD, "2. Passive telemetry review (M1 injection / M2 telemetry)"))
+        emit(Line(Level.HEAD, "2. Captured evidence review"))
         reviewTelemetry(emit, events)
-        emit(Line(Level.HEAD, "2b. Signaling endpoint metadata (T7, passive)"))
+        emit(Line(Level.HEAD, "2b. Signaling endpoints"))
         reviewSignaling(emit)
-        emit(Line(Level.HEAD, "3. SDP mutation (M3)"))
+        emit(Line(Level.HEAD, "2c. Browser & client security"))
+        reviewClient(events, emit)
+        emit(Line(Level.HEAD, "3. SDP rules"))
         if (cfg.sdpMutation.enabled)
-            emit(Line(Level.INFO, "M3 is enabled; it rewrites the next negotiation. See SDP Mutation (M3) for before/after evidence."))
+            emit(Line(Level.INFO, "M3 is enabled; it rewrites the next negotiation. See SDP rules for before/after evidence."))
         else
             emit(Line(Level.SKIP, "M3 is disabled."))
         emit(Line(Level.HEAD, "4. Authorization matrix (M5)"))
@@ -222,7 +294,7 @@ class RunAllController(
         val cfg = configStore.config
         var ready = true
         if (!cfg.injectionEnabled) {
-            emit(Line(Level.WARN, "Agent injection is OFF. Turn on 'Enable agent injection' in Config (M0)."))
+            emit(Line(Level.WARN, "Agent injection is OFF. Turn on 'Enable agent injection' in Setup."))
             ready = false
         }
         if (cfg.hostAllowList.isEmpty()) {
@@ -366,7 +438,7 @@ class RunAllController(
         if (sdp == 0 && installed > 0)
             emit(Line(Level.INFO, "No SDP seen yet — join or start a call so a negotiation happens."))
 
-        // Imported chrome://webrtc-internals dump comparison (manual import in Telemetry (M2)).
+        // Imported chrome://webrtc-internals dump comparison (manual import in Evidence).
         events.filter { it.type == "internals-comparison" }.maxByOrNull { it.seq }?.let { comparison ->
             InternalsComparator.decodeLines(comparison.raw).forEach { line ->
                 val level = when (line.level) {
@@ -406,7 +478,38 @@ class RunAllController(
             }
         }
         if (scans.isNotEmpty()) emit(Line(Level.INFO,
-            "TLS results cover the selected TCP listener; they do not test TURN authentication/allocation, media DTLS or SRTP. Complete means the scanner completed, not that the listener is secure. Full SSLyze evidence is in TLS Tests / telemetry."))
+            "TLS results cover the selected TCP listener; they do not test TURN authentication/allocation, media DTLS or SRTP. Complete means the scanner completed, not that the listener is secure. Full SSLyze evidence is in TLS tests / telemetry."))
+    }
+
+    private fun authzLine(prefix: String, result: AuthzResult): Line {
+        val level = when (result.verdict) {
+            AuthzResult.LIKELY_VIOLATION -> Level.FINDING
+            AuthzResult.LEAD -> Level.WARN
+            else -> if (result.flagged) Level.WARN else Level.INFO
+        }
+        val verdict = result.verdict.takeIf { it.isNotEmpty() }?.let { " [$it]" }.orEmpty()
+        return Line(level, "$prefix ${result.variant}$verdict: ${result.baselineUrl} → HTTP ${result.status}; ${result.note}")
+    }
+
+    /** Original response policy (before injection), canaries, capture lifecycle and cross-window messaging. */
+    private fun reviewClient(events: List<TelemetryEvent>, emit: (Line) -> Unit) {
+        val policy = webrtc.telemetry.PolicyAudit.audit(events)
+        val browser = webrtc.telemetry.BrowserReview.review(events)
+        if (policy.isEmpty() && browser.isEmpty()) {
+            emit(Line(Level.SKIP, "No original response headers or browser security events captured yet. Browse the app (customer and advisor pages) through Burp; generate XSS canaries in the XSS canaries screen to test stored injection."))
+            return
+        }
+        policy.forEach { issue ->
+            emit(Line(if (issue.level == webrtc.telemetry.PolicyAudit.Level.REVIEW) Level.WARN else Level.INFO,
+                "${issue.origin}: ${issue.title}. ${issue.detail}" + if (issue.events.size > 1) " (${issue.events.size} responses)" else ""))
+        }
+        browser.forEach { item ->
+            emit(Line(when (item.level) {
+                webrtc.telemetry.BrowserReview.Level.FINDING -> Level.FINDING
+                webrtc.telemetry.BrowserReview.Level.REVIEW -> Level.WARN
+                webrtc.telemetry.BrowserReview.Level.INFO -> Level.INFO
+            }, "${item.title}: ${item.text}"))
+        }
     }
 
     private fun reviewPrivacy(events: List<TelemetryEvent>, emit: (Line) -> Unit) {
@@ -520,8 +623,8 @@ class RunAllController(
 
     private fun authzGuidance(identities: List<IdentityProfile>): Line {
         if (identities.size < 2)
-            return Line(Level.SKIP, "M5 needs at least two identities. Add them in Config (M0), then right-click a request → 'WebRTC: Run authz matrix'. This step cannot pick a request for you.")
-        return Line(Level.INFO, "${identities.size} identities configured. Right-click a captured request → 'WebRTC: Run authz matrix' to replay it across them; a cross-principal 2xx is flagged in Authz Matrix (M5).")
+            return Line(Level.SKIP, "M5 needs at least two identities and captured requests. Select sessions in Access control or add identities in Setup, then use the Burp context menu.")
+        return Line(Level.INFO, "${identities.size} identities configured. Right-click a captured request → 'WebRTC: Run authz matrix' to replay it across them; a cross-principal 2xx is flagged in Access control.")
     }
 
     /**

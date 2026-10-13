@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, parse_qsl, urlencode
 
-VERSION = "1.1.0"
+VERSION = "1.1.3"
 COOKIE = 0x2112A442
 MAX_OUTPUT = 2_000_000
 

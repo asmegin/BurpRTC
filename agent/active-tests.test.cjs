@@ -363,3 +363,125 @@ test('application peer telemetry preserves TURN credentials in full', () => {
   assert.ok(JSON.stringify(h.events).includes('secret-password'));
   assert.ok(JSON.stringify(h.events).includes('secret-user'));
 });
+
+function mediaHarness() {
+  const events = [], timers = new Map(), messageListeners = [], posted = [];
+  let timerId = 0;
+  class Track {
+    constructor(kind, settings) { this.kind = kind; this.readyState = 'live'; this.settings = settings; this.listeners = {}; }
+    getSettings() { return this.settings; }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    stop() { this.readyState = 'ended'; }
+  }
+  const camera = new Track('video', {}), screen = new Track('video', { displaySurface: 'monitor' });
+  class Peer {
+    constructor() { this.connectionState = 'new'; this.signalingState = 'stable'; this.listeners = {}; }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    close() { this.connectionState = 'closed'; this.signalingState = 'closed'; }
+  }
+  const context = {
+    location: { href: 'https://bank.test/advisor', origin: 'https://bank.test' }, AbortController, TextEncoder,
+    document: { cookie: 'advisor_session=readable' },
+    navigator: { mediaDevices: {
+      getUserMedia: () => Promise.resolve({ getTracks: () => [camera], getVideoTracks: () => [camera] }),
+      getDisplayMedia: () => Promise.resolve({ getTracks: () => [screen], getVideoTracks: () => [screen] }),
+      enumerateDevices: () => Promise.resolve([{ kind: 'videoinput', label: 'Secret Cam' }, { kind: 'audioinput', label: '' }])
+    } },
+    setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
+    clearTimeout: id => timers.delete(id),
+    RTCPeerConnection: Peer,
+    addEventListener: (type, fn) => { if (type === 'message') messageListeners.push(fn); },
+    postMessage: (message, target) => { posted.push([message, target]); },
+    __WRTC_CFG__: { collect: '/collect', command: '/command' },
+    fetch: (url, options) => {
+      if (options.method === 'POST') { events.push(JSON.parse(options.body)); return Promise.resolve({ ok: true }); }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ commands: [] }) });
+    }
+  };
+  context.window = context;
+  vm.runInNewContext(source, context);
+  const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const fire = delay => { for (const [id, t] of [...timers]) if (t.delay === delay) { timers.delete(id); t.fn(); } };
+  return { events, context, camera, screen, messageListeners, posted, flush, fire };
+}
+
+test('screen share and camera capture lifecycle is recorded without media or device labels', async () => {
+  const h = mediaHarness();
+  await h.context.navigator.mediaDevices.getDisplayMedia({ video: true });
+  await h.context.navigator.mediaDevices.getUserMedia({ video: true });
+  await h.flush();
+  const granted = h.events.find(e => e.type === 'capture-result');
+  assert.equal(granted.outcome, 'resolved');
+  assert.deepEqual(granted.displaySurfaces, ['monitor']);
+  assert.ok(h.events.some(e => e.type === 'track-state' && e.source === 'screen' && e.displaySurface === 'monitor'));
+  h.screen.stop();
+  await h.flush();
+  assert.ok(h.events.some(e => e.type === 'track-state' && e.action === 'stop-called' && e.source === 'screen'));
+  const pc = new h.context.RTCPeerConnection();
+  pc.close();
+  h.fire(3000);
+  await h.flush();
+  const live = h.events.filter(e => e.action === 'live-after-close');
+  assert.equal(live.length, 1);
+  assert.equal(live[0].source, 'camera/microphone');
+  assert.ok(!JSON.stringify(h.events).includes('Secret Cam'));
+});
+
+test('device enumeration reports counts and label exposure only', async () => {
+  const h = mediaHarness();
+  await h.context.navigator.mediaDevices.enumerateDevices();
+  await h.flush();
+  const result = h.events.find(e => e.type === 'enumerateDevices-result');
+  assert.deepEqual(result.counts, { videoinput: 1, audioinput: 1 });
+  assert.equal(result.labelsExposed, true);
+  assert.ok(!JSON.stringify(result).includes('Secret Cam'));
+});
+
+test('XSS canary beacons once with origin and readable cookies', async () => {
+  const h = mediaHarness();
+  h.context.__wrtcCanary('abc123XYZ', 'chat');
+  h.context.__wrtcCanary('abc123XYZ', 'chat');
+  await h.flush();
+  const fired = h.events.filter(e => e.type === 'xss-canary-fired');
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].canaryId, 'abc123XYZ');
+  assert.equal(fired[0].origin, 'https://bank.test');
+  assert.equal(fired[0].readableCookies, 'advisor_session=readable');
+});
+
+test('message listeners without origin checks and wildcard posts are reported', async () => {
+  const h = mediaHarness();
+  h.context.addEventListener('message', function (event) { document.body.innerHTML = event.data; });
+  h.context.addEventListener('message', function (event) { if (event.origin !== 'https://bank.test') return; });
+  h.context.postMessage({ token: 'secret' }, '*');
+  h.context.postMessage('safe', 'https://bank.test');
+  h.messageListeners[0]({ origin: 'https://evil.test', data: 'hello' });
+  await h.flush();
+  const listeners = h.events.filter(e => e.type === 'message-listener');
+  assert.deepEqual(listeners.map(e => e.checksOrigin), [false, true]);
+  const sent = h.events.filter(e => e.type === 'message-sent');
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].data.includes('secret'));
+  assert.equal(h.posted.length, 2);
+  assert.equal(h.events.find(e => e.type === 'message-received').origin, 'https://evil.test');
+});
+
+test('M4 list mode sends each payload once in order', async () => {
+  const h = harness(); h.channel();
+  await h.start(fuzz({ mode: 'list', payloads: ['<img src=x>', 'second'], count: 2 }));
+  await h.tick(100);
+  assert.deepEqual(h.sends, ['<img src=x>', 'second']);
+});
+
+test('browser-checks command reports permission states and policy without media', async () => {
+  const h = harness();
+  h.context.navigator.permissions = { query: ({ name }) => Promise.resolve({ state: name === 'camera' ? 'granted' : 'prompt' }) };
+  h.context.isSecureContext = true;
+  await h.start({ type: 'browser-checks', config: {} });
+  await h.flush();
+  const result = h.events.find(e => e.type === 'browser-capabilities');
+  assert.equal(result.permissions.camera, 'granted');
+  assert.equal(result.permissions.microphone, 'prompt');
+  assert.equal(result.secureContext, true);
+  assert.equal(h.events.find(e => e.type === 'command-result').status, 'completed');
+});

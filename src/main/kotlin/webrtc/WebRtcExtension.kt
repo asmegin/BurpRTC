@@ -12,6 +12,8 @@ import webrtc.telemetry.TelemetryTableModel
 import webrtc.ui.AuthzContextMenu
 import webrtc.ui.SuiteTab
 import webrtc.tls.TlsScanRunner
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class WebRtcExtension : BurpExtension {
     override fun initialize(api: MontoyaApi) {
@@ -25,21 +27,48 @@ class WebRtcExtension : BurpExtension {
         val runner = AuthzMatrixRunner(api, configStore, scope)
         val tlsRunner = TlsScanRunner(configStore, scope::inScope, telemetry)
         val outcomeStore = webrtc.assessment.OutcomeStore(api, telemetry) { configStore.config.assessment.engagementId }
-        val protocolRunner = webrtc.protocol.ProtocolRunner(configStore, webrtc.assessment.NetworkAuthorization(configStore, scope::inScope), outcomeStore)
+        val protocolRunner = webrtc.protocol.ProtocolRunner(configStore, webrtc.assessment.NetworkAuthorization(configStore, scope::inScope),
+            outcomeStore, webrtc.protocol.BurpScenarioTransport(api))
         val assessments = webrtc.assessment.AssessmentController(configStore, outcomeStore, protocolRunner, telemetry)
 
-        val capture = webrtc.workflow.RtcCapture(configStore, scope, telemetry)
-        api.websockets().registerWebSocketCreatedHandler(capture)
-        api.http().registerHttpHandler(InjectorHandler(api, configStore, scope, capture = capture))
+        // Burp-native integration: Collaborator-backed canaries and deduplicated issues.
+        val data = api.persistence().extensionData()
+        val collaborator = webrtc.burp.BurpCollaborator(api, { data.getString("webrtc.collaborator.v1") }, { data.setString("webrtc.collaborator.v1", it) })
+        val canaries = webrtc.canary.CanaryRegistry({ data.getString("webrtc.canaries.v1") }, { data.setString("webrtc.canaries.v1", it) }, telemetry) {
+            collaborator.takeIf { it.available() }
+        }
+        val issues = webrtc.burp.IssueReporter({ api.siteMap().add(webrtc.burp.IssueReporter.toAuditIssue(it)) }, configStore, telemetry).also { it.attach() }
+        runCatching { api.intruder().registerPayloadGeneratorProvider(webrtc.burp.CanaryPayloadGeneratorProvider(canaries)) }
+            .onFailure { api.logging().logToError("[canary] Intruder payload generator unavailable: ${it.message}") }
 
-        val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests, tlsRunner, assessments) { tlsRunner.stop(); protocolRunner.stop(); bridge.restart() }
+        val capture = webrtc.workflow.RtcCapture(configStore, scope, telemetry)
+        val requests = webrtc.workflow.RequestCatalog()
+        val sessions = webrtc.authz.SessionCatalog(configStore, scope)
+        val links = webrtc.authz.LinkCatalogs(configStore, scope)
+        val linkTester = webrtc.authz.LinkTester(api, configStore, scope)
+        capture.sessions = sessions
+        capture.canaries = canaries
+        api.websockets().registerWebSocketCreatedHandler(capture)
+        api.http().registerHttpHandler(InjectorHandler(api, configStore, scope, requests = requests, capture = capture, sessions = sessions,
+            links = links, canaries = canaries))
+
+        val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests, tlsRunner, assessments, requests, sessions,
+            links, linkTester, canaries, issues, { collaborator.available() }) { tlsRunner.stop(); protocolRunner.stop(); bridge.restart() }
         api.userInterface().registerContextMenuItemsProvider(
-            AuthzContextMenu { selected -> suiteTab.runAuthz(selected) }
+            AuthzContextMenu(suiteTab::runAuthz, suiteTab::stageAuthz)
         )
         api.userInterface().registerSuiteTab("WebRTC", suiteTab)
 
+        // Poll Collaborator only while out-of-band canaries exist.
+        val poller = Executors.newSingleThreadScheduledExecutor { Thread(it, "webrtc-collaborator-poll").apply { isDaemon = true } }
+        poller.scheduleWithFixedDelay({
+            runCatching { if (canaries.all().any { it.collaborator.isNotBlank() }) canaries.pollOutOfBand() }
+        }, 15, 15, TimeUnit.SECONDS)
+
         bridge.start()
-        api.extension().registerUnloadingHandler { tlsRunner.close(); protocolRunner.close(); bridge.stop() }
+        api.extension().registerUnloadingHandler {
+            poller.shutdownNow(); suiteTab.stopAuthz(); tlsRunner.close(); protocolRunner.close(); bridge.stop()
+        }
 
         api.logging().logToOutput(BuildInfo.loadedMessage())
     }

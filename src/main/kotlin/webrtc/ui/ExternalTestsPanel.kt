@@ -81,6 +81,12 @@ class ExternalTestsPanel(
 
     init {
         table.rowSorter = TableRowSorter(tableModel)
+        table.columnModel.getColumn(0).preferredWidth = 115
+        table.columnModel.getColumn(1).preferredWidth = 105
+        table.columnModel.getColumn(2).preferredWidth = 220
+        table.columnModel.getColumn(3).preferredWidth = 220
+        table.putClientProperty("webrtc.wrapColumns", listOf(0, 2, 3))
+        table.putClientProperty("webrtc.rowHeight", 56)
         TableCopyUi.install(table)
         table.selectionModel.addListSelectionListener { e ->
             if (!e.valueIsAdjusting) showSelected()
@@ -96,26 +102,13 @@ class ExternalTestsPanel(
             override fun changedUpdate(e: DocumentEvent) { lastSignature = null; refresh() }
         })
 
-        val intro = JTextArea(
-            "External Tests — ready-to-copy Linux/Bash commands for ten external RTC tools, " +
-                "built from observed telemetry and Config. Suggestions update automatically as " +
-                "information arrives. Commands run outside Burp's scope enforcement on a Linux " +
-                "host, and generating a command does not execute it or mark the external surface " +
-                "as scanned. Credentials are shown and copied in full."
-        ).apply {
-            isEditable = false; lineWrap = true; wrapStyleWord = true; isOpaque = false
-            border = BorderFactory.createEmptyBorder(8, 10, 4, 10)
-            font = UIManager.getFont("Label.font")
-        }
+        val intro = UiKit.note("Select a recipe, review the editable command, and copy it to your terminal. Suggestions update from captured evidence. Commands execute outside Burp's scope enforcement; credentials are included in full.")
 
         val buttons = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-            add(JButton("Reset to detected").apply { addActionListener { resetToDetected() } })
-            add(JButton("Copy command").apply { addActionListener { copyCommand() } })
-            add(JButton("Copy selected recipes").apply { addActionListener { copySelected() } })
-            add(JButton("Copy all ready recipes").apply { addActionListener { copyAllReady() } })
-            add(JButton("Export guide (Markdown)…").apply { addActionListener { exportGuide() } })
-            add(JButton("Export TURNt config…").apply { addActionListener { exportTurntConfig() } })
-            add(status)
+            add(UiKit.primary(JButton("Copy command").apply { addActionListener { copyCommand() } }))
+            add(UiKit.quiet(JButton("Reset edits").apply { addActionListener { resetToDetected() } }))
+            add(UiKit.more("More", "Copy selected recipes" to { copySelected() }, "Copy all ready recipes" to { copyAllReady() },
+                "Export guide (Markdown)…" to { exportGuide() }, "Export TURNt config…" to { exportTurntConfig() }))
         }
 
         val north = JPanel(BorderLayout()).apply {
@@ -123,22 +116,20 @@ class ExternalTestsPanel(
             add(buttons, BorderLayout.SOUTH)
         }
 
-        val right = JPanel(BorderLayout()).apply {
-            add(JScrollPane(info).apply { border = BorderFactory.createTitledBorder("Recipe") }, BorderLayout.NORTH)
-            add(JScrollPane(commandArea).apply { border = BorderFactory.createTitledBorder("Command (editable)") }, BorderLayout.CENTER)
+        val right = JTabbedPane().apply {
+            addTab("Command · editable", JScrollPane(commandArea))
+            addTab("Recipe details", JScrollPane(info))
         }
 
-        val centre = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, JScrollPane(table), right).apply { resizeWeight = 0.45 }
-        val south = JScrollPane(manualArea).apply {
-            border = BorderFactory.createTitledBorder("Manual inputs")
-            preferredSize = java.awt.Dimension(0, 110)
-        }
+        val centre = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, JScrollPane(table), right).apply { resizeWeight = 0.5; dividerLocation = 530 }
+        val south = UiKit.disclosure("Manual inputs · KEY=value", JScrollPane(manualArea).apply { preferredSize = java.awt.Dimension(0, 140) })
 
         add(north, BorderLayout.NORTH)
         add(centre, BorderLayout.CENTER)
-        add(south, BorderLayout.SOUTH)
+        add(JPanel(BorderLayout(0, 8)).apply { add(south, BorderLayout.CENTER); add(status, BorderLayout.SOUTH) }, BorderLayout.SOUTH)
+        status.putClientProperty("webrtc.role", "muted"); status.preferredSize = java.awt.Dimension(0, 30)
 
-        Timer(2000) { refresh() }.apply { isRepeats = true; start() }
+        UiKit.refreshWhileShowing(this) { refresh() }
         refresh()
     }
 

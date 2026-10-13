@@ -2,6 +2,7 @@ package webrtc.config
 
 import burp.api.montoya.MontoyaApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /** Persists configuration in the Burp project. Full credentials also appear in telemetry and exports. */
 class ConfigStore(private val api: MontoyaApi) {
@@ -26,7 +27,18 @@ class ConfigStore(private val api: MontoyaApi) {
         val raw = api.persistence().extensionData().getString(key)
         return if (raw.isNullOrBlank()) WebRtcConfig()
         else runCatching {
-            json.decodeFromString<WebRtcConfig>(raw).let { loaded ->
+            json.decodeFromString<WebRtcConfig>(raw).let { decoded ->
+                // ScanPlan existed before there were scan controls. Give those projects
+                // the all-on defaults once; an explicit empty selection in v2 stays empty.
+                val plan = json.parseToJsonElement(raw).jsonObject["scanPlan"]?.jsonObject
+                val versioned = if (plan?.containsKey("selectionVersion") != true)
+                    decoded.copy(scanPlan = ScanPlan()) else decoded
+                // Version 3 added browser, meeting-link and document scans. A non-empty
+                // earlier selection gains them once; an explicit empty selection stays empty.
+                val loaded = versioned.scanPlan.let { p ->
+                    if (p.selectionVersion >= ScanPlan.CURRENT_VERSION) versioned
+                    else versioned.copy(scanPlan = ScanPlan(if (p.enabled.isEmpty()) p.enabled else p.enabled + ScanPlan.ADDED_IN_V3))
+                }
                 // Version 0.4 defaulted the SDP fuzzer to 16 fixed cases. Expand that
                 // legacy default so existing projects get the new line-mutation pass.
                 if (loaded.sdpFuzz.maxCases == 16) loaded.copy(

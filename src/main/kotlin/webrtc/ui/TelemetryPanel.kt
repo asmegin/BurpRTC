@@ -23,8 +23,9 @@ class TelemetryPanel(
 
     private val table = JTable(model)
     private val sorter = TableRowSorter(model)
-    private val detail = JTextArea(8, 80).apply { isEditable = false; lineWrap = true; wrapStyleWord = true }
+    private val detail = SearchableTextPane("Event details", wrap = true).apply { text = "Select an event to inspect its full content." }
     private val filterField = JTextField(20)
+    private val count = JLabel().apply { putClientProperty("webrtc.role", "muted") }
     private val timeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
     init {
@@ -32,14 +33,19 @@ class TelemetryPanel(
         TableCopyUi.install(table)
 
         val top = JPanel(FlowLayout(FlowLayout.LEFT))
-        top.add(JLabel("Filter (type/frame/summary):"))
+        top.add(JLabel("Filter events:"))
         top.add(filterField)
-        top.add(JButton("Import webrtc-internals dump…").apply { addActionListener { importDump() } })
+        filterField.toolTipText = "Search event type, page URL, connection, or summary."
+        top.add(UiKit.quiet(JButton("Reset filter").apply { addActionListener { filterField.text = "" } }))
         controller?.let { active ->
-            top.add(JButton("Capture stats (T1)").apply { addActionListener { captureStats(active) } })
+            top.add(UiKit.primary(JButton("Capture live stats").apply { addActionListener { captureStats(active) } }))
         }
-        val clear = JButton("Clear").also { it.addActionListener { model.clearAll(); detail.text = "" } }
-        top.add(clear)
+        top.add(UiKit.more("More", "Import webrtc-internals dump…" to { importDump() },
+            "Clear captured events" to { model.clearAll(); detail.text = "" }))
+        top.add(count)
+        fun updateCount() { count.text = "${table.rowCount} / ${model.rowCount} events" }
+        model.addTableModelListener { SwingUtilities.invokeLater { updateCount() } }
+        sorter.addRowSorterListener { updateCount() }; updateCount()
 
         filterField.document.addUndoableEditListener { applyFilter() }
         filterField.addActionListener { applyFilter() }
@@ -51,15 +57,14 @@ class TelemetryPanel(
                 if (viewRow >= 0) {
                     val modelRow = table.convertRowIndexToModel(viewRow)
                     detail.text = model.eventAt(modelRow)?.raw ?: ""
-                    detail.caretPosition = 0
-                }
+                } else detail.text = "Select an event to inspect its full content."
             }
         }
 
         val split = JSplitPane(
             JSplitPane.VERTICAL_SPLIT,
-            JScrollPane(table),
-            JScrollPane(detail)
+            UiKit.emptyTable(table, "No matching events", "Enable the agent and browse the target, or clear the filter."),
+            detail
         ).apply { resizeWeight = 0.7 }
 
         add(top, BorderLayout.NORTH)

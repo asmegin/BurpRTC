@@ -15,7 +15,7 @@ class AuthzMatrixRunnerTest {
         var inScope = true
         var sends = 0
         val request = proxy(HttpRequest::class.java) { name -> when (name) {
-            "url" -> "https://app.test/api"; "hasHeader" -> false; else -> null
+            "url" -> "https://app.test/api"; "path" -> "/api"; "bodyToString" -> ""; "method" -> "GET"; "hasHeader" -> false; else -> null
         } }
         val response = proxy(HttpResponse::class.java) { name -> when (name) {
             "statusCode" -> 403.toShort(); "bodyToString" -> "denied"; else -> null

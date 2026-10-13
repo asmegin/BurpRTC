@@ -20,7 +20,7 @@ class TlsScanRunnerTest {
         org.junit.Assume.assumeTrue("Optional real Python integration: set WEBRTC_TLS_SMOKE_PYTHON", !executable.isNullOrBlank())
         val store = store().also { it.save(it.config.copy(hostAllowList = listOf("localhost"))) }
         val port = ServerSocket(0).use { it.localPort }
-        val cfg = TlsScanConfig(pythonExecutable = executable!!, endpoint = "turns:localhost:$port?transport=tcp", timeoutSeconds = 30)
+        val cfg = TlsScanConfig(pythonExecutable = executable!!, endpoint = "turns:localhost:$port?transport=tcp", timeoutSeconds = 30, engine = "sslyze")
         val telemetry = TelemetryTableModel()
         val runner = TlsScanRunner(store, { it == "https://localhost:$port/" }, telemetry, Files.createTempDirectory("tls-real"))
         runner.use {
@@ -46,7 +46,7 @@ class TlsScanRunnerTest {
             it.save(it.config.copy(injectionEnabled = true, hostAllowList = listOf("example.test")))
         }
     }
-    private val config = TlsScanConfig(endpoint = "turns:example.test:5349?transport=tcp")
+    private val config = TlsScanConfig(endpoint = "turns:example.test:5349?transport=tcp", engine = "sslyze")
     private val output = """{"schema":1,"engine":"SSLyze 6.3.1","hostname":"example.test","port":5349,"status":"partial","checks":[{"name":"heartbleed","status":"error","summary":"timeout"}],"findings":[],"raw":{}}"""
 
     private class FakeProcess(output: String = "", private val onWait: () -> Boolean = { true }) : Process() {
