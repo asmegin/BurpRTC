@@ -32,7 +32,12 @@ object EventTypes {
         "tls-runtime", "tls-scan-start", "tls-scan-result", "tls-scan-error",
         "getDisplayMedia", "enumerateDevices-result", "browser-checks-error",
         "message-listener", "message-received", "message-sent",
-        "xss-canary-fired", "xss-canary-reflected", "collaborator-interaction", "burp-issue"
+        "xss-canary-fired", "xss-canary-reflected", "collaborator-interaction", "burp-issue",
+        // DataChannel runner (1.3.0): agent case/receipt/health events and Burp-side results.
+        "dc-case", "dc-markers", "dc-health", "dc-load-step", "dc-churn-result", "dc-churn-summary", "ws-admission-result",
+        "transport-action-result", "page-error", "ws-colibri", "ws-colibri-send", "ws-colibri-recv",
+        "dc-suite-error", "dc-load-error", "dc-churn-error", "dc-health-error", "ws-admission-error", "transport-action-error",
+        "dc-case-result", "dc-runner", "runner-action", "bridge-log"
     )
 }
 

@@ -22,7 +22,7 @@ function harness(initialChannelState = 'open') {
   }
   class Peer extends Emitter {
     constructor(config) { super(); this.config = config; this.connectionState = 'new'; this.iceConnectionState = 'new'; this.signalingState = 'stable'; this.sctp = { maxMessageSize: 65536, state: 'connecting' }; peers.push(this); }
-    createDataChannel(label) { return new Channel(label); }
+    createDataChannel(label, options = {}) { const c = new Channel(label); Object.assign(c, options); return c; }
     createOffer() { return Promise.resolve({ type: 'offer', sdp: 'v=0\r\na=fingerprint:sha-256 AA\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10\r\n' }); }
     getStats() {
       const stats = [
@@ -53,11 +53,18 @@ function harness(initialChannelState = 'open') {
     }
     close() { this.closed = true; this.connectionState = 'closed'; this.signalingState = 'closed'; this.emit('connectionstatechange'); }
   }
+  let observe = false;
+  const sockets = [];
+  class Socket extends Emitter {
+    constructor(url) { super(); this.url = url; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
+    send(value) { this.sent.push(value); }
+    close() { this.readyState = 3; this.emit('close', { code: 1000, reason: '' }); }
+  }
   const context = {
-    location: { href: 'https://example.test/call' }, navigator: {}, AbortController, TextEncoder,
+    location: { href: 'https://example.test/call' }, navigator: {}, AbortController, TextEncoder, Blob,
     setTimeout: (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; },
     clearTimeout: id => timers.delete(id),
-    RTCPeerConnection: Peer,
+    RTCPeerConnection: Peer, WebSocket: Socket,
     __WRTC_CFG__: { collect: '/collect', command: '/command' },
     fetch: (url, options) => {
       if (options.method === 'POST') { events.push(JSON.parse(options.body)); return Promise.resolve({ ok: true }); }
@@ -65,7 +72,7 @@ function harness(initialChannelState = 'open') {
       let automatic = null;
       if (query.has('autoFuzz')) { autoRequests.push(query.get('autoFuzz')); automatic = autoRequest(query.get('autoFuzz')); }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({
-        commands: automatic ? [automatic] : query.get('poll') === '1' ? queued : [], authorized: permit && query.has('authorize')
+        commands: automatic ? [automatic] : query.get('poll') === '1' ? queued : [], authorized: permit && query.has('authorize'), observe
       }) });
     }
   };
@@ -81,7 +88,7 @@ function harness(initialChannelState = 'open') {
     const value = { id: `command-${++sequence}`, agent: events[0].agent, frame: context.location.href, ...command };
     queued = [value]; return value;
   };
-  return { events, sends, timers, peers, context, flush, tick, queue,
+  return { events, sends, timers, peers, context, flush, tick, queue, sockets, observe: value => { observe = value; },
     auto: callback => { autoRequest = callback; }, autoRequests, nativeChannel: label => new Channel(label),
     channel: () => new context.RTCPeerConnection().createDataChannel('same-label'),
     start: async command => { await flush(); const value = queue(command); await tick(3000); return value; },
@@ -484,4 +491,183 @@ test('browser-checks command reports permission states and policy without media'
   assert.equal(result.permissions.microphone, 'prompt');
   assert.equal(result.secureContext, true);
   assert.equal(h.events.find(e => e.type === 'command-result').status, 'completed');
+});
+
+// ---- DataChannel runner (1.3.0) ----
+const suite = (cases, config = {}) => ({ type: 'dc-suite', config: {
+  channelId: 'dc1', settleMs: 100, maxMessageBytes: 70000, maxTotalBytes: 1048576, maxBufferedAmount: 262144, cases, ...config
+} });
+const text = (value, marker = '') => ({ id: `case-${value.length}`, marker, payload: { kind: 'text', parts: [{ text: value }] } });
+const settle = async (h, n, ms = 100) => { for (let i = 0; i < n; i++) await h.tick(ms); };
+
+test('runner suite sends each case once with native send, UTF-8 byte counts and settle-window states', async () => {
+  const h = harness(); h.channel();
+  await h.start(suite([text('é wrtcaaaaaaaaaaaa', 'wrtcaaaaaaaaaaaa'), { id: 'bin', payload: { kind: 'arraybuffer', parts: [{ fill: 'zero', count: 16 }] } }]));
+  await settle(h, 2);
+  const cases = h.events.filter(e => e.type === 'dc-case');
+  assert.equal(cases.length, 2);
+  assert.equal(cases[0].bytes, 19); assert.equal(cases[0].stage, 'queued'); assert.equal(cases[0].marker, 'wrtcaaaaaaaaaaaa');
+  assert.equal(cases[0].stateAfter.channel, 'open'); assert.ok(cases[0].textHash && cases[0].sentAt);
+  assert.equal(cases[1].bytes, 16); assert.equal(Object.prototype.toString.call(h.sends[1]), '[object ArrayBuffer]');
+  // Runner sends are not double-reported as application traffic.
+  assert.ok(!h.events.some(e => e.type === 'dc-send'));
+  assert.equal(h.events.find(e => e.type === 'command-result').status, 'completed');
+});
+
+test('runner payload kinds and seeded random bytes are reproducible', async () => {
+  const kinds = ['uint8array', 'int16array', 'float64array', 'dataview', 'blob'];
+  const runs = [];
+  for (let run = 0; run < 2; run++) {
+    const h = harness(); h.channel();
+    await h.start(suite(kinds.map(kind => ({ id: kind, payload: { kind, parts: [{ fill: 'random', count: 16, seed: 42 }] } }))));
+    await settle(h, kinds.length);
+    runs.push(h.sends);
+    assert.deepEqual(h.events.filter(e => e.type === 'dc-case').map(e => e.bytes), [16, 16, 16, 16, 16]);
+  }
+  assert.ok(runs[0][4] instanceof Blob);
+  assert.deepEqual(Array.from(runs[0][0]), Array.from(runs[1][0]));
+  assert.ok(new Set(Array.from(runs[0][0])).size > 4);
+});
+
+test('runner distinguishes browser rejection from queued sends and blocks over-cap payloads', async () => {
+  const h = harness(); h.channel();
+  h.onSend(value => { if (typeof value === 'string' && value.length > 10) throw new TypeError('message too large'); });
+  await h.start(suite([text('short'), text('this is longer than ten'),
+    { id: 'huge', payload: { kind: 'text', parts: [{ repeat: 'A', count: 80000 }] } }]));
+  await settle(h, 2);
+  await h.flush();
+  const cases = h.events.filter(e => e.type === 'dc-case');
+  assert.deepEqual(cases.map(e => e.stage), ['queued', 'browser-rejected', 'blocked']);
+  assert.match(cases[1].error, /TypeError: message too large/);
+  assert.match(cases[2].error, /per-message byte cap/);
+});
+
+test('runner suite stops when the channel closes and honours revoked authorization', async () => {
+  const h = harness(); const channel = h.channel();
+  h.onSend(() => { channel.readyState = 'closed'; });
+  await h.start(suite([text('one'), text('two')]));
+  await settle(h, 1);
+  assert.equal(h.sends.length, 1);
+  assert.equal(h.events.find(e => e.type === 'command-result').status, 'failed');
+  const r = harness(); r.channel(); r.onSend(() => r.permit(false));
+  await r.start(suite([text('one'), text('two')])); await settle(r, 1);
+  assert.equal(r.sends.length, 1);
+  assert.equal(r.events.find(e => e.type === 'command-result').status, 'cancelled');
+});
+
+test('marker receipts are batched with Colibri envelopes; ordinary messages are sampled', async () => {
+  const h = harness(); const channel = h.channel();
+  channel.emit('message', { data: '{"colibriClass":"EndpointMessage","from":"abcd1234","to":"","msgPayload":{"wrtcMarker":"wrtcbbbbbbbbbbbb"}}' });
+  channel.emit('message', { data: '{"colibriClass":"EndpointStats","from":"abcd1234","bitrate":1}' });
+  await h.tick(250);
+  const batch = h.events.find(e => e.type === 'dc-markers');
+  assert.equal(batch.receipts.length, 1);
+  assert.equal(batch.receipts[0].marker, 'wrtcbbbbbbbbbbbb');
+  assert.equal(batch.receipts[0].from, 'abcd1234'); assert.equal(batch.receipts[0].colibriClass, 'EndpointMessage');
+  const recv = h.events.filter(e => e.type === 'dc-recv');
+  assert.equal(recv.length, 1); assert.equal(recv[0].colibriClass, 'EndpointStats'); assert.ok(recv[0].text);
+  await h.tick(3000);
+  assert.deepEqual(h.events.filter(e => e.type === 'agent-state').at(-1).endpointHints, ['abcd1234']);
+});
+
+test('observe mode polls faster and reports hash receipts for replay matching', async () => {
+  const h = harness(); h.observe(true); const channel = h.channel();
+  await h.flush();
+  assert.ok([...h.timers.values()].some(t => t.delay === 500));
+  channel.emit('message', { data: '{"colibriClass":"EndpointMessage","from":"x","msgPayload":{"a":1}}' });
+  await h.tick(250);
+  const receipt = h.events.find(e => e.type === 'dc-markers').receipts[0];
+  assert.equal(receipt.marker, ''); assert.ok(receipt.payloadHash);
+});
+
+test('Colibri channels and ICE-lite remotes are classified; heartbeat carries channel details', async () => {
+  const h = harness(); await h.flush();
+  const pc = new h.context.RTCPeerConnection();
+  pc.createDataChannel('JVB data channel', { protocol: 'http://jitsi.org/protocols/colibri', ordered: true });
+  const created = h.events.find(e => e.type === 'dc-created');
+  assert.equal(created.peerKind, 'jvb'); assert.equal(created.protocol, 'http://jitsi.org/protocols/colibri');
+  assert.equal(created.maxMessageSize, 65536);
+  const sfu = new h.context.RTCPeerConnection();
+  await sfu.setRemoteDescription({ type: 'offer', sdp: 'v=0\r\na=ice-lite\r\n' });
+  await h.tick(3000);
+  const state = h.events.filter(e => e.type === 'agent-state').at(-1);
+  assert.deepEqual(state.pcs.map(p => p.kind), ['jvb', 'sfu']);
+  assert.equal(state.channels[0].protocol, 'http://jitsi.org/protocols/colibri');
+});
+
+test('Colibri WebSocket is registered with URL hints and usable as a runner transport', async () => {
+  const h = harness();
+  const ws = new h.context.WebSocket('wss://meet.example.test/colibri-ws/jvb1/conf42/ep777?pwd=secret-pwd');
+  ws.readyState = 1; ws.emit('open');
+  ws.send('{"colibriClass":"ClientHello"}');
+  await h.flush(); await h.tick(3000);
+  const state = h.events.filter(e => e.type === 'agent-state').at(-1);
+  assert.equal(state.endpoint, 'ep777');
+  assert.equal(state.sockets[0].conference, 'conf42');
+  assert.ok(state.sockets[0].url.includes('secret-pwd'));
+  assert.equal(h.events.find(e => e.type === 'ws-colibri-send').colibriClass, 'ClientHello');
+  await h.start(suite([text('{"colibriClass":"EndpointMessage","to":"","msgPayload":{}}')], { transport: 'colibri-ws', socketId: 'ws1', channelId: undefined }));
+  await settle(h, 1);
+  assert.equal(ws.sent.length, 2);
+  assert.equal(h.events.find(e => e.type === 'dc-case').transport, 'colibri-ws');
+  ws.emit('message', { data: '{"colibriClass":"EndpointMessage","from":"ep1","wrtcMarker":"wrtccccccccccccc"}' });
+  await h.tick(250);
+  assert.equal(h.events.find(e => e.type === 'dc-markers').receipts[0].kind, 'colibri-ws');
+});
+
+test('WebSocket admission uses an unwrapped socket and reports the first bridge message', async () => {
+  const h = harness();
+  await h.start({ type: 'ws-admission', config: { url: 'wss://meet.example.test/colibri-ws/jvb1/other/ep9?pwd=bad', timeoutMs: 3000, send: '{"colibriClass":"ClientHello"}' } });
+  const ws = h.sockets[0]; ws.readyState = 1; ws.emit('open');
+  ws.emit('message', { data: '{"colibriClass":"ServerHello","version":"2.3"}' });
+  await h.flush();
+  const result = h.events.find(e => e.type === 'ws-admission-result');
+  assert.equal(result.opened, true); assert.equal(result.firstClass, 'ServerHello');
+  assert.deepEqual(ws.sent, ['{"colibriClass":"ClientHello"}']);
+  assert.ok(!h.events.some(e => e.type === 'ws-colibri'));
+});
+
+test('load burst sends sequential markers and stops on backpressure', async () => {
+  const h = harness(); const channel = h.channel();
+  h.onSend(() => { channel.bufferedAmount += 100; });
+  await h.start({ type: 'dc-load', config: { mode: 'burst', count: 20, channelId: 'dc1', markerStem: 'wrtcload0001', prefix: '{"m":"', suffix: '"}',
+    maxMessages: 100, maxBytes: 100000, maxBufferedAmount: 450 } });
+  const step = h.events.find(e => e.type === 'dc-load-step');
+  assert.equal(step.sent, 5); assert.equal(step.stopReason, 'backpressure');
+  assert.equal(h.sends[0], '{"m":"wrtcload00010000"}'); assert.equal(h.sends[4], '{"m":"wrtcload00010004"}');
+});
+
+test('channel churn needs a connected SCTP association and closes every channel', async () => {
+  const refused = harness(); refused.channel();
+  await refused.start({ type: 'dc-churn', config: { pcId: 'pc1', mode: 'sequential', iterations: 2, openTimeoutMs: 1000, variants: [{ name: 'default' }] } });
+  assert.match(refused.events.find(e => e.type === 'dc-churn-error').detail, /renegotiation/);
+  const h = harness(); h.channel(); h.peers[0].sctp.state = 'connected';
+  await h.start({ type: 'dc-churn', config: { pcId: 'pc1', mode: 'concurrent', iterations: 3, openTimeoutMs: 1000,
+    variants: [{ name: 'unordered', ordered: false }, { name: 'lifetime', maxPacketLifeTime: 100 }] } });
+  const results = h.events.filter(e => e.type === 'dc-churn-result');
+  assert.equal(results.length, 3);
+  assert.ok(results.every(r => r.outcome === 'open' && r.finalState === 'closed'));
+  assert.equal(results[0].ordered, false); assert.equal(results[1].maxPacketLifeTime, 100);
+  assert.equal(h.events.find(e => e.type === 'dc-churn-summary').outcomes.open, 3);
+});
+
+test('health snapshot reports peers, channels and DataChannel statistics', async () => {
+  const h = harness(); h.channel();
+  await h.start({ type: 'dc-health', config: {} });
+  const health = h.events.find(e => e.type === 'dc-health');
+  assert.equal(health.channels[0].state, 'open');
+  assert.equal(health.peers[0].media.packetsReceived, 0);
+  assert.equal(h.events.find(e => e.type === 'command-result').status, 'completed');
+});
+
+test('page errors carrying a marker become error receipts', async () => {
+  const listeners = {};
+  const h = harness();
+  h.context.addEventListener = (type, fn) => { (listeners[type] ||= []).push(fn); };
+  vm.runInNewContext(source.replace('if (window.__WRTC_AGENT_ACTIVE__) return;', ''), h.context);
+  listeners.error.forEach(fn => fn({ target: h.context, message: 'TypeError: bad payload wrtcdddddddddddd', error: { stack: 'at handler' } }));
+  await h.tick(250);
+  const error = h.events.find(e => e.type === 'page-error');
+  assert.deepEqual(error.markers, ['wrtcdddddddddddd']);
+  assert.ok(h.events.some(e => e.type === 'dc-markers' && e.receipts.some(r => r.kind === 'error' && r.marker === 'wrtcdddddddddddd')));
 });

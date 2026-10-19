@@ -97,7 +97,7 @@ class InjectorHandler(
         var bodyStr = out.bodyToString()
         if (cfg.stripCsp) bodyStr = metaCspRegex.replace(bodyStr, "")
 
-        val idx = indexOfIgnoreCase(bodyStr, "</head>")
+        val idx = injectionPoint(bodyStr)
         val injected = if (idx >= 0) {
             bodyStr.substring(0, idx) + agent + bodyStr.substring(idx)
         } else {
@@ -130,6 +130,18 @@ class InjectorHandler(
 
     private fun indexOfIgnoreCase(haystack: String, needle: String): Int =
         haystack.indexOf(needle, ignoreCase = true)
+
+    /**
+     * Before the first <script> inside <head>, so the agent hooks RTCPeerConnection,
+     * createDataChannel and WebSocket before application code runs; otherwise before
+     * </head>. Meta charset and other leading head elements stay ahead of the agent.
+     */
+    private fun injectionPoint(body: String): Int {
+        val head = indexOfIgnoreCase(body, "</head>")
+        if (head < 0) return -1
+        val script = Regex("<script[\\s>]", RegexOption.IGNORE_CASE).find(body)?.range?.first ?: -1
+        return if (script in 0 until head) script else head
+    }
 
     private fun jsonStr(s: String): String =
         kotlinx.serialization.json.JsonPrimitive(s).toString().replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")

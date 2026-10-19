@@ -50,6 +50,10 @@ class AssessmentController(private val config: ConfigStore, val store: OutcomeSt
                         }
                     }
                 }
+                id in TestRegistry.dataChannelTests && cfg.assessment.scenarios.none { it.testId == id } -> {
+                    if (store.snapshot().none { it.testId == id && it.backend == "datachannel-runner" })
+                        record(id, "not-tested", "Run Tests → Data channel runner (or select Data channel runner in Scan All) with at least two instrumented participants")
+                }
                 id in TestRegistry.scenarioTests -> {
                     val scenarios = cfg.assessment.scenarios.filter { it.testId == id }
                     if (scenarios.isEmpty()) record(id, "blocked", "Needs recorded scenario, scoped identities, policy and receiver/content assertions")

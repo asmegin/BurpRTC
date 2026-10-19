@@ -77,7 +77,8 @@ class InjectorHandlerTest {
         enabled: Boolean = true,
         strip: Boolean = true,
         allow: List<String> = listOf("video.example"),
-        contentType: String = "text/html"
+        contentType: String = "text/html",
+        body: String = html
     ): HttpResponse {
         val api = api()
         val config = ConfigStore(api)
@@ -94,10 +95,20 @@ class InjectorHandlerTest {
         }
         try {
             val headers = listOf(header("Content-Type", contentType)) + policies.map { header(it.first, it.second) }
-            return InjectorHandler(api, config, ScopeGate(api)).handleHttpResponseReceived(response(headers)).response()
+            return InjectorHandler(api, config, ScopeGate(api)).handleHttpResponseReceived(response(headers, body)).response()
         } finally {
             ObjectFactoryLocator.FACTORY = originalFactory
         }
+    }
+
+    @Test fun `agent runs before the page's own head scripts and after meta charset`() {
+        val page = "<html><head><meta charset=\"utf-8\"><script src=\"app.js\"></script></head><body><script>late()</script></body></html>"
+        val out = inject(emptyList(), body = page).bodyToString()
+        val agent = out.indexOf("__WRTC_CFG__")
+        assertTrue(agent > out.indexOf("<meta charset"))
+        assertTrue(agent < out.indexOf("<script src=\"app.js\""))
+        val plain = inject(emptyList(), body = "<html><head><title>x</title></head><body><script>a()</script></body></html>").bodyToString()
+        assertTrue(plain.indexOf("__WRTC_CFG__") < plain.indexOf("</head>") && plain.indexOf("__WRTC_CFG__") > plain.indexOf("<title>"))
     }
 
     private fun HttpResponse.values(name: String) = headers().filter { it.name().equals(name, true) }.map { it.value() }

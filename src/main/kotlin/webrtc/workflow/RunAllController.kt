@@ -40,7 +40,8 @@ class RunAllController(
     private val assessments: webrtc.assessment.AssessmentController? = null,
     private val automaticAuthz: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null,
     private val automaticInvites: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null,
-    private val automaticArtifacts: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null
+    private val automaticArtifacts: (((() -> Boolean), (AuthzResult) -> Unit) -> Int)? = null,
+    private val dataChannelRunner: webrtc.datachannel.DcSuiteRunner? = null
 ) {
     /** One line of the run report, tagged so the UI can format it. */
     enum class Level { HEAD, OK, INFO, WARN, FINDING, FAIL, SKIP }
@@ -52,7 +53,7 @@ class RunAllController(
     /** Already-captured metadata for the report; never queues a request. */
     fun observedSignalingEndpoints(): List<SignalingMetadata.Endpoint> = runCatching { signalingEndpoints() }.getOrDefault(emptyList())
 
-    fun requestStop() { cancelled = true; tlsRunner?.stop(); assessments?.stop(); controller.cancelAll() }
+    fun requestStop() { cancelled = true; tlsRunner?.stop(); assessments?.stop(); dataChannelRunner?.stop(); controller.cancelAll() }
     fun reset() { cancelled = false }
 
     /** Runs the whole sequence, emitting report lines through [emit]. Call off the EDT. */
@@ -169,6 +170,31 @@ class RunAllController(
                         budgetMs = (cfg.signalingFlood.count.toLong() * cfg.signalingFlood.intervalMs) + 10000L
                     )
                 }
+            }
+        }
+
+        if (!cancelled && plan.includes(ScanModule.DC_RUNNER)) {
+            emit(Line(Level.HEAD, "3c. Data channel runner"))
+            val dataChannelRunner = dataChannelRunner
+            when {
+                dataChannelRunner == null -> emit(Line(Level.SKIP, "The DataChannel runner is unavailable."))
+                !configReady -> emit(Line(Level.SKIP, "Configuration is not ready, so the DataChannel runner was skipped."))
+                dataChannelRunner.running -> emit(Line(Level.SKIP, "A DataChannel runner suite is already running in Tests → Data channel runner."))
+                else -> runCatching {
+                    dataChannelRunner.run { line ->
+                        emit(Line(when {
+                            line.startsWith("FAIL") -> Level.FINDING
+                            line.startsWith("PASS") -> Level.OK
+                            line.startsWith("INCONCLUSIVE") -> Level.WARN
+                            line.startsWith("BLOCKED") || line.startsWith("NOT APPLICABLE") -> Level.SKIP
+                            else -> Level.INFO
+                        }, line))
+                    }
+                }.onSuccess { run ->
+                    if (run != null) emit(Line(if (run.results.any { it.verdict == webrtc.datachannel.Verdict.FAIL }) Level.FINDING else Level.INFO,
+                        "DataChannel runner: " + webrtc.datachannel.Verdict.entries.joinToString(" · ") { v -> "${v.label} ${run.results.count { it.verdict == v }}" } +
+                            ". Coverage and evidence are in Tests → Data channel runner."))
+                }.onFailure { emit(Line(Level.WARN, "DataChannel runner did not run: ${it.message}")) }
             }
         }
 

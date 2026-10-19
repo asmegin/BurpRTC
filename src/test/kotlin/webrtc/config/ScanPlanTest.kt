@@ -29,13 +29,15 @@ class ScanPlanTest {
         val store = store()
         store.save(store.config.copy(scanPlan = ScanPlan(emptySet())))
         assertTrue(store.load().scanPlan.enabled.isEmpty())
-        assertEquals(3, store.load().scanPlan.selectionVersion)
+        assertEquals(ScanPlan.CURRENT_VERSION, store.load().scanPlan.selectionVersion)
     }
     @Test fun `version 2 selections gain the new modules once while an empty selection stays empty`() {
         persisted = """{"scanPlan":{"enabled":["passive","authz"],"selectionVersion":2}}"""
         val upgraded = store().config.scanPlan
-        assertEquals(setOf("passive", "authz", "browser", "invites", "artifacts"), upgraded.enabled)
-        assertEquals(3, upgraded.selectionVersion)
+        assertEquals(setOf("passive", "authz", "browser", "invites", "artifacts", "dc-runner"), upgraded.enabled)
+        assertEquals(ScanPlan.CURRENT_VERSION, upgraded.selectionVersion)
+        persisted = """{"scanPlan":{"enabled":["passive"],"selectionVersion":3}}"""
+        assertEquals(setOf("passive", "dc-runner"), store().config.scanPlan.enabled)
         persisted = """{"scanPlan":{"enabled":[],"selectionVersion":2}}"""
         assertTrue(store().config.scanPlan.enabled.isEmpty())
     }

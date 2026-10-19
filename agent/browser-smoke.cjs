@@ -186,6 +186,18 @@ async function main() {
     await evaluate('new Promise(resolve => setTimeout(resolve, 100))');
     assert.deepEqual(await evaluate('smokeChannel.received.at(-1)'), [0, 255, 122]);
     console.log('PASS: M4 binary bytes arrive intact');
+    // DataChannel runner: marker receipt from the real remote end and a real browser rejection above maxMessageSize.
+    const max = await evaluate('smokeChannel.a.sctp.maxMessageSize');
+    run = await runJob('dc-suite', { channelId: local.channelId, settleMs: 200, maxMessageBytes: max + 10, maxTotalBytes: 4 * max, maxBufferedAmount: 4 * max, cases: [
+      { id: 'smoke-marker', marker: 'wrtcsmoke0000001', payload: { kind: 'text', parts: [{ text: '{"type":"probe","wrtcMarker":"wrtcsmoke0000001"}' }] } },
+      { id: 'smoke-binary', marker: 'wrtcsmoke0000002', payload: { kind: 'arraybuffer', parts: [{ text: 'wrtcsmoke0000002' }, { fill: 'random', count: 64, seed: 7 }] } },
+      { id: 'smoke-over-max', payload: { kind: 'text', parts: [{ repeat: 'A', count: max + 1 }] } }] });
+    await new Promise(resolve => setTimeout(resolve, 600));
+    const cases = events.filter(e => e.type === 'dc-case' && e.commandId === run.id);
+    assert.deepEqual(cases.map(e => e.stage), ['queued', 'queued', 'browser-rejected'], JSON.stringify(cases.map(e => e.error)));
+    const receipts = events.filter(e => e.type === 'dc-markers').flatMap(e => e.receipts).map(r => r.marker);
+    assert.ok(receipts.includes('wrtcsmoke0000001') && receipts.includes('wrtcsmoke0000002'), JSON.stringify(receipts));
+    console.log(`PASS: runner cases reach the real remote end with marker receipts; ${max + 1}-byte send rejected by the browser (${cases[2].error})`);
     cancelAfterSend = true;
     run = await runJob('dc-fuzz', { ...fuzzConfig, count: 10, intervalMs: 500 }, { channelId: local.channelId });
     assert.equal(run.result.status, 'cancelled');

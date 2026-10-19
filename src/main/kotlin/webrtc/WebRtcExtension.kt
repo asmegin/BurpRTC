@@ -37,6 +37,11 @@ class WebRtcExtension : BurpExtension {
         val canaries = webrtc.canary.CanaryRegistry({ data.getString("webrtc.canaries.v1") }, { data.setString("webrtc.canaries.v1", it) }, telemetry) {
             collaborator.takeIf { it.available() }
         }
+        // DataChannel runner: integrated browser sessions, case execution and persisted results.
+        val browserRunner = webrtc.datachannel.BrowserRunner(configStore, activeTests, telemetry, api)
+        val dcResults = webrtc.datachannel.DcResultStore(telemetry, { data.getString("webrtc.dcsuite.runs.v1") }, { data.setString("webrtc.dcsuite.runs.v1", it) },
+            { outcomeStore }, { configStore.config.assessment.engagementId })
+        val dcRunner = webrtc.datachannel.DcSuiteRunner(configStore, activeTests, telemetry, dcResults, browserRunner)
         val issues = webrtc.burp.IssueReporter({ api.siteMap().add(webrtc.burp.IssueReporter.toAuditIssue(it)) }, configStore, telemetry).also { it.attach() }
         runCatching { api.intruder().registerPayloadGeneratorProvider(webrtc.burp.CanaryPayloadGeneratorProvider(canaries)) }
             .onFailure { api.logging().logToError("[canary] Intruder payload generator unavailable: ${it.message}") }
@@ -53,7 +58,7 @@ class WebRtcExtension : BurpExtension {
             links = links, canaries = canaries))
 
         val suiteTab = SuiteTab(api, configStore, telemetry, runner, activeTests, tlsRunner, assessments, requests, sessions,
-            links, linkTester, canaries, issues, { collaborator.available() }) { tlsRunner.stop(); protocolRunner.stop(); bridge.restart() }
+            links, linkTester, canaries, issues, { collaborator.available() }, dcRunner, browserRunner, dcResults) { tlsRunner.stop(); protocolRunner.stop(); bridge.restart() }
         api.userInterface().registerContextMenuItemsProvider(
             AuthzContextMenu(suiteTab::runAuthz, suiteTab::stageAuthz)
         )
@@ -67,7 +72,7 @@ class WebRtcExtension : BurpExtension {
 
         bridge.start()
         api.extension().registerUnloadingHandler {
-            poller.shutdownNow(); suiteTab.stopAuthz(); tlsRunner.close(); protocolRunner.close(); bridge.stop()
+            poller.shutdownNow(); suiteTab.stopAuthz(); dcRunner.stop(); browserRunner.closeAll(); tlsRunner.close(); protocolRunner.close(); bridge.stop()
         }
 
         api.logging().logToOutput(BuildInfo.loadedMessage())

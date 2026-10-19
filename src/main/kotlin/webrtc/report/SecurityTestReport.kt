@@ -229,7 +229,21 @@ object SecurityTestReport {
                 "${source(event)}: ${detail(event)}; channel=${obj.str("channelId")}; state=${obj.str("state") ?: "not supplied"}; accepted=${obj.str("accepted") ?: "not supplied"}; bytes=${obj.str("bytes") ?: "not supplied"}. Local creation differs from open; send() acceptance does not prove remote parsing, processing or authorization.", listOf(event), checks = setOf(CoverageCheck.DATA_CHANNEL))
         }
         absent(SecurityArea.DATA, "DataChannel lifecycle / payload fuzz", dcEvents.isNotEmpty(), "No DataChannel result captured.")
-        unsupported(SecurityArea.DATA, "SCTP packet / application authorization testing", "Native SCTP parser/reliability attacks and application message authorization need separate protocol/application tests.")
+        // DataChannel runner: one row per classified case. FAIL is a finding; send() acceptance alone is never a pass.
+        events.filter { it.type == "dc-case-result" }.forEach { event ->
+            val obj = objectOf(event)
+            val result = obj?.get("result") as? JsonObject
+            val scope = obj.str("scope").orEmpty()
+            val status = when (obj.str("verdict")) {
+                "FAIL" -> Status.FINDING; "PASS" -> Status.COMPLETED; "INCONCLUSIVE" -> Status.PARTIAL
+                "BLOCKED" -> Status.SKIPPED; "NOT APPLICABLE" -> Status.NOT_APPLICABLE; else -> Status.PARTIAL
+            }
+            val reasons = (result?.get("reasons") as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+            add(if (scope == "load") SecurityArea.DOS else SecurityArea.DATA, "DataChannel runner ${result.str("caseId")}: ${result.str("title")}", status,
+                "${obj.str("verdict")} via ${result.str("transport")}; sender ${result.str("sender")}; ${reasons.joinToString("; ")}", listOf(event),
+                checks = buildSet { add(CoverageCheck.DATA_CHANNEL); if (scope == "authz") add(CoverageCheck.SESSION); if (scope == "fuzz") add(CoverageCheck.SIGNALING_FUZZ) })
+        }
+        unsupported(SecurityArea.DATA, "Native SCTP / DCEP packet testing", "Browser JavaScript cannot craft SCTP chunks, fragmentation, stream resets or DCEP packets; use a separate DTLS/SCTP-capable test peer with crash and log collection (DCH-04).")
         unsupported(SecurityArea.ARCHITECTURE, "SFU / MCU / Gateway identification and isolation", "Architecture is not established by the current captures. Tenant isolation, routing, transcoding, gateway trust and media access require server-side/application evidence.")
 
         authz.forEachIndexed { index, result ->

@@ -14,9 +14,10 @@
   var COLLECT = CFG.collect;
   var COMMAND = CFG.command;
   var FRAME = (function () { try { return location.href; } catch (e) { return "frame"; } })();
-  var AGENT_VERSION = "1.2.0";
+  var AGENT_VERSION = "1.3.0";
   var AGENT_ID = "agent-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   var NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+  var NativeWebSocket = typeof window.WebSocket === "function" ? window.WebSocket : null;
   var channels = new Map();
   var wrappedChannels = new WeakSet();
   var channelSeq = 0;
@@ -41,6 +42,330 @@
   function isPrivate(text) {
     try { return PRIVATE_RE.test(String(text)); } catch (e) { return false; }
   }
+
+  // DataChannel runner support. Every runner payload carries a unique marker so any
+  // instrumented page that receives, renders or throws on it can prove recipient-side
+  // observation; send() acceptance alone is never treated as delivery.
+  var MARKER_RE = /wrtc[0-9a-z]{12}/g;
+  var COLIBRI_PROTOCOL = "http://jitsi.org/protocols/colibri";
+  var sockets = new Map();
+  var socketSeq = 0;
+  var nativeCreateChannel = new WeakMap();
+  var learnedCounts = {};
+  var endpointHints = [];
+  var ownEndpoint = "";
+  var observing = false, domObserver = null, domSeen = {}, domSeenCount = 0;
+  var markerQueue = [], markerTimer = null, markersDropped = 0;
+  var pageErrorCount = 0;
+  var recvBudget = {};
+
+  function findMarkers(text) {
+    if (typeof text !== "string" || text.indexOf("wrtc") < 0) return [];
+    var found = text.slice(0, 1048576).match(MARKER_RE) || [], unique = [];
+    for (var i = 0; i < found.length && unique.length < 16; i++) if (unique.indexOf(found[i]) < 0) unique.push(found[i]);
+    return unique;
+  }
+
+  // FNV-1a over UTF-16 code units: identical in sender and recipient pages, so a
+  // replayed message can be matched without carrying a marker.
+  function hash32(text) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return ("0000000" + h.toString(16)).slice(-8);
+  }
+
+  function parseEnvelope(text) {
+    if (typeof text !== "string" || text.length > 1048576 || !/^\s*\{/.test(text)) return null;
+    try {
+      var obj = JSON.parse(text);
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+      var body = {};
+      Object.keys(obj).forEach(function (k) { if (k !== "from" && k !== "to") body[k] = obj[k]; });
+      return { colibriClass: typeof obj.colibriClass === "string" ? obj.colibriClass.slice(0, 128) : "",
+        from: typeof obj.from === "string" ? obj.from.slice(0, 128) : "", to: typeof obj.to === "string" ? obj.to.slice(0, 128) : "",
+        payloadHash: hash32(obj.msgPayload !== undefined ? JSON.stringify(obj.msgPayload) : JSON.stringify(body)) };
+    } catch (e) { return null; }
+  }
+
+  function bytesText(view) {
+    var out = "", limit = Math.min(view.length, 65536);
+    for (var i = 0; i < limit; i += 8192) out += String.fromCharCode.apply(null, Array.prototype.slice.call(view.subarray(i, Math.min(limit, i + 8192))));
+    return out;
+  }
+
+  function binaryView(data) {
+    try {
+      // Tag check rather than instanceof: buffers can come from another frame's realm.
+      if (Object.prototype.toString.call(data) === "[object ArrayBuffer]") return new Uint8Array(data);
+      if (data && data.buffer && typeof data.byteLength === "number") return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength);
+    } catch (e) {}
+    return null;
+  }
+
+  function queueMarker(entry) {
+    if (markerQueue.length >= 2000) { markersDropped++; return; }
+    markerQueue.push(entry);
+    if (!markerTimer) markerTimer = setTimeout(flushMarkers, 250);
+  }
+
+  function flushMarkers() {
+    markerTimer = null;
+    var batch = markerQueue.splice(0, 250);
+    if (batch.length) beacon({ type: "dc-markers", receipts: batch, dropped: markersDropped,
+      detail: batch.length + " recipient observation(s)" + (markersDropped ? "; " + markersDropped + " dropped" : "") });
+    if (markerQueue.length) markerTimer = setTimeout(flushMarkers, 250);
+  }
+
+  function rememberEndpoint(id) {
+    if (id && id !== ownEndpoint && endpointHints.indexOf(id) < 0 && endpointHints.length < 32) endpointHints.push(id);
+  }
+
+  function learnKey(key) {
+    learnedCounts[key] = (learnedCounts[key] || 0) + 1;
+    return learnedCounts[key] <= 8;
+  }
+
+  // Inbound application data: marker receipts (and, while a runner observes, hash
+  // receipts for replay matching) are batched; ordinary traffic is sampled.
+  function observeIncoming(data, where) {
+    var text = typeof data === "string" ? data : null, view = text === null ? binaryView(data) : null;
+    var scan = text !== null ? text : view ? bytesText(view) : "";
+    var envelope = text !== null ? parseEnvelope(text) : null;
+    if (envelope && envelope.from) rememberEndpoint(envelope.from);
+    var markers = findMarkers(scan), now = Date.now(), bytes = sizeOf(data);
+    function receipt(marker) {
+      return { marker: marker, kind: where.transport === "datachannel" ? "dc" : where.transport === "colibri-ws" ? "colibri-ws" : "ws",
+        t: now, channelId: where.channelId || "", socketId: where.socketId || "", label: where.label || "", pc: where.pc || "",
+        colibriClass: envelope ? envelope.colibriClass : "", from: envelope ? envelope.from : "", to: envelope ? envelope.to : "",
+        bytes: bytes, binary: text === null, textHash: text !== null ? hash32(text) : "", payloadHash: envelope ? envelope.payloadHash : "" };
+    }
+    markers.forEach(function (m) { queueMarker(receipt(m)); });
+    if (!markers.length && observing && where.transport !== "ws") queueMarker(receipt(""));
+    if (!markers.length && typeof Blob !== "undefined" && data instanceof Blob && data.size) {
+      data.slice(0, 65536).arrayBuffer().then(function (buffer) {
+        findMarkers(bytesText(new Uint8Array(buffer))).forEach(function (m) { queueMarker(receipt(m)); });
+      }).catch(function () {});
+    }
+    if (markers.length || where.transport === "ws") return;
+    var key = (where.channelId || where.socketId) + ":" + Math.floor(now / 1000);
+    recvBudget[key] = (recvBudget[key] || 0) + 1;
+    if (recvBudget[key] > 20) return;
+    if (Object.keys(recvBudget).length > 64) recvBudget = {};
+    var event = { type: where.transport === "datachannel" ? "dc-recv" : "ws-colibri-recv", pc: where.pc || "", channelId: where.channelId || "",
+      socketId: where.socketId || "", label: where.label || "", bytes: bytes, preview: text !== null ? text.slice(0, 512) : "[binary]" };
+    if (envelope) { event.colibriClass = envelope.colibriClass; event.from = envelope.from; event.to = envelope.to; }
+    if (text !== null && learnKey("recv:" + (where.channelId || where.socketId) + ":" + (event.colibriClass || ""))) {
+      event.text = text.slice(0, 16384); event.truncated = text.length > 16384;
+    }
+    beacon(event);
+  }
+
+  function observeOutgoing(data, where) {
+    var text = typeof data === "string" ? data : null, envelope = text !== null ? parseEnvelope(text) : null;
+    var event = { type: where.transport === "datachannel" ? "dc-send" : "ws-colibri-send", pc: where.pc || "", channelId: where.channelId || "",
+      socketId: where.socketId || "", label: where.label || "", bytes: sizeOf(data) };
+    if (envelope) event.colibriClass = envelope.colibriClass;
+    if (text !== null && learnKey("send:" + (where.channelId || where.socketId) + ":" + (event.colibriClass || ""))) {
+      event.text = text.slice(0, 16384); event.truncated = text.length > 16384;
+    }
+    beacon(event);
+  }
+
+  function colibriHints(url) {
+    var match = /\/colibri-ws\/([^\/?#]+)\/([^\/?#]+)\/([^\/?#]+)/.exec(url || "");
+    if (!match) return null;
+    function decode(v) { try { return decodeURIComponent(v); } catch (e) { return v; } }
+    return { bridge: decode(match[1]), conference: decode(match[2]), endpoint: decode(match[3]) };
+  }
+
+  function wsState(ws) { return ["connecting", "open", "closing", "closed"][ws.readyState] || "unknown"; }
+
+  // Colibri WebSocket bridge channels are registered as runner transports (the URL
+  // and its pwd are preserved in full). Every other socket is scanned for markers only.
+  function observeSocket(ws, url) {
+    var hints = colibriHints(url);
+    if (!hints) {
+      ws.addEventListener("message", function (e) { if (typeof e.data === "string") observeIncoming(e.data, { transport: "ws" }); });
+      return;
+    }
+    var id = "ws" + (++socketSeq), nativeSend = ws.send;
+    sockets.set(id, { ws: ws, url: url, hints: hints, send: nativeSend, createdAt: Date.now() });
+    if (sockets.size > 16) {
+      var oldest = Array.from(sockets.keys()).find(function (k) { return sockets.get(k).ws.readyState === 3; });
+      if (oldest) sockets.delete(oldest);
+    }
+    if (hints.endpoint) ownEndpoint = hints.endpoint;
+    var where = { transport: "colibri-ws", socketId: id, label: "colibri-ws" };
+    ws.send = function (data) {
+      var result = nativeSend.apply(ws, arguments);
+      observeOutgoing(data, where);
+      return result;
+    };
+    function lifecycle(state, extra) {
+      var event = { type: "ws-colibri", socketId: id, url: url, state: state, bridge: hints.bridge, conference: hints.conference,
+        endpoint: hints.endpoint, detail: "Colibri WebSocket " + id + " " + state };
+      Object.keys(extra || {}).forEach(function (k) { event[k] = extra[k]; });
+      beacon(event);
+      heartbeat();
+    }
+    ws.addEventListener("open", function () { lifecycle("open"); });
+    ws.addEventListener("close", function (e) { lifecycle("closed", { code: e && e.code, reason: e && e.reason, wasClean: e && e.wasClean }); });
+    ws.addEventListener("message", function (e) { observeIncoming(e.data, where); });
+    lifecycle("created");
+  }
+
+  function wrapWebSocket() {
+    if (!NativeWebSocket) return;
+    function Wrapped(url, protocols) {
+      var ws = arguments.length > 1 ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url);
+      try { observeSocket(ws, String(url)); } catch (e) {}
+      return ws;
+    }
+    Wrapped.prototype = NativeWebSocket.prototype;
+    Object.setPrototypeOf(Wrapped, NativeWebSocket);
+    try { window.WebSocket = Wrapped; } catch (e) {}
+  }
+
+  // Application errors are recipient-side processing evidence; markers in the
+  // message or stack tie them to the case that caused them.
+  function watchPageErrors() {
+    if (typeof window.addEventListener !== "function") return;
+    function report(kind, message, stack) {
+      if (++pageErrorCount > 100) return;
+      var text = String(message || "") + "\n" + String(stack || ""), markers = findMarkers(text), now = Date.now();
+      beacon({ type: "page-error", kind: kind, message: String(message || "").slice(0, 1024), stack: String(stack || "").slice(0, 2048),
+        markers: markers, t: now, detail: kind + ": " + String(message || "").slice(0, 200) });
+      markers.forEach(function (m) { queueMarker({ marker: m, kind: "error", t: now, detail: String(message || "").slice(0, 256) }); });
+    }
+    try {
+      window.addEventListener("error", function (e) {
+        // Resource load failures target an element; script errors carry a message or error.
+        if (!e || (e.target && e.target.nodeType === 1) || (!e.message && !e.error)) return;
+        report("error", e.message || (e.error && e.error.message), e.error && e.error.stack);
+      }, true);
+      window.addEventListener("unhandledrejection", function (e) {
+        var reason = e && e.reason;
+        report("unhandledrejection", reason && reason.message || String(reason), reason && reason.stack);
+      });
+    } catch (e) {}
+  }
+
+  // While a runner observes, rendered markers prove the recipient application
+  // processed (displayed) a message, not just that its channel received it.
+  function setObserving(on) {
+    if (on === observing) return;
+    observing = on;
+    if (!on) { if (domObserver) { try { domObserver.disconnect(); } catch (e) {} } domObserver = null; return; }
+    if (typeof MutationObserver !== "function" || typeof document === "undefined" || !document.documentElement) return;
+    function scan(text) {
+      findMarkers(text).forEach(function (m) {
+        if (domSeen[m]) return;
+        if (++domSeenCount > 5000) { domSeen = {}; domSeenCount = 0; }
+        domSeen[m] = true;
+        queueMarker({ marker: m, kind: "dom", t: Date.now() });
+      });
+    }
+    try {
+      domObserver = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length && i < 500; i++) {
+          var m = mutations[i];
+          if (m.type === "characterData") scan(m.target && m.target.data);
+          else for (var j = 0; j < m.addedNodes.length && j < 50; j++) {
+            var node = m.addedNodes[j];
+            var text = node.nodeType === 3 ? node.data : node.textContent;
+            if (text && text.length <= 65536) scan(text);
+          }
+        }
+      });
+      domObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    } catch (e) {}
+  }
+
+  function base64Bytes(text) {
+    var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var clean = String(text).replace(/[\s=]/g, ""), out = new Uint8Array(Math.floor(clean.length * 3 / 4)), bits = 0, value = 0, n = 0;
+    for (var i = 0; i < clean.length; i++) {
+      var v = alphabet.indexOf(clean.charAt(i));
+      if (v < 0) throw new Error("Invalid base64 payload");
+      value = (value << 6) | v; bits += 6;
+      if (bits >= 8) { bits -= 8; out[n++] = (value >> bits) & 255; }
+    }
+    return out.subarray(0, n);
+  }
+
+  // Seeded PRNG (mulberry32): the case seed reproduces the exact random payload.
+  function seeded(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // Build a runner payload from parts. Text kinds stay strings (UTF-8 measured);
+  // binary kinds are assembled into ArrayBuffer, typed array, DataView or Blob.
+  function buildPayload(spec, cap) {
+    var parts = spec && Array.isArray(spec.parts) ? spec.parts : [];
+    var kind = spec && spec.kind || "text";
+    if (parts.length > 64) throw new Error("Too many payload parts");
+    function count(p) {
+      if (!Number.isInteger(p.count) || p.count < 0) throw new Error("Invalid payload part count");
+      if (p.count > cap) throw new Error("Payload exceeds the per-message byte cap");
+      return p.count;
+    }
+    if (kind === "text") {
+      var s = "";
+      parts.forEach(function (p) {
+        if (typeof p.text === "string") s += p.text;
+        else if (typeof p.repeat === "string" && p.repeat.length) s += p.repeat.repeat(count(p));
+        else if (p.fill === "random") {
+          var r = seeded(p.seed || 1), n = count(p), chars = [];
+          for (var i = 0; i < n; i++) chars.push(String.fromCharCode(32 + Math.floor(r() * 95)));
+          s += chars.join("");
+        } else throw new Error("Invalid text payload part");
+        if (s.length > cap) throw new Error("Payload exceeds the per-message byte cap");
+      });
+      if (sizeOf(s) > cap) throw new Error("Payload exceeds the per-message byte cap");
+      return s;
+    }
+    var chunks = [], total = 0;
+    parts.forEach(function (p) {
+      var bytes;
+      if (typeof p.text === "string") bytes = new TextEncoder().encode(p.text);
+      else if (typeof p.base64 === "string") bytes = base64Bytes(p.base64);
+      else if (typeof p.repeat === "string" && p.repeat.length) bytes = new TextEncoder().encode(p.repeat.repeat(Math.min(count(p), cap)));
+      else if (p.fill === "zero") bytes = new Uint8Array(count(p));
+      else if (p.fill === "random") {
+        bytes = new Uint8Array(count(p));
+        var r = seeded(p.seed || 1);
+        for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(r() * 256);
+      } else throw new Error("Invalid binary payload part");
+      total += bytes.length;
+      if (total > cap) throw new Error("Payload exceeds the per-message byte cap");
+      chunks.push(bytes);
+    });
+    var buffer = new Uint8Array(total), offset = 0;
+    chunks.forEach(function (c) { buffer.set(c, offset); offset += c.length; });
+    if (kind === "arraybuffer") return buffer.buffer;
+    if (kind === "uint8array") return buffer;
+    if (kind === "int16array") { if (total % 2) throw new Error("Int16Array payload needs an even byte count"); return new Int16Array(buffer.buffer); }
+    if (kind === "float64array") { if (total % 8) throw new Error("Float64Array payload needs a multiple of 8 bytes"); return new Float64Array(buffer.buffer); }
+    if (kind === "dataview") return new DataView(buffer.buffer);
+    if (kind === "blob") { if (typeof Blob !== "function") throw new Error("Blob is unavailable in this page"); return new Blob([buffer]); }
+    throw new Error("Unknown payload kind " + kind);
+  }
+
+  function previewOf(data) {
+    if (typeof data === "string") return data.slice(0, 256);
+    var view = binaryView(data);
+    if (view) return Array.from(view.subarray(0, 64)).map(function (n) { return n.toString(16).padStart(2, "0"); }).join(" ");
+    return "[blob " + sizeOf(data) + " bytes]";
+  }
+
+  function delay(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
 
   function beacon(event) {
     if (!COLLECT) return;
@@ -186,6 +511,8 @@
     function record(desc, side, accepted, restart) {
       if (!desc || !desc.sdp) return;
       rememberSdp(desc);
+      // A full-ICE remote is another participant; an ICE-lite remote is a media server.
+      if (side === "remote" && accepted && /(^|\r?\n)a=ice-lite/.test(desc.sdp)) peerMeta.get(pc).iceLite = true;
       beacon({ type: "sdp-" + side, pc: pcId, kind: desc.type, sdp: desc.sdp,
         generation: peerMeta.get(pc)[side] + (accepted ? 0 : 1), accepted: accepted,
         iceRestart: !!restart, private: isPrivate(desc.sdp) });
@@ -362,6 +689,7 @@
   function hookCreateDataChannel(pc, pcId) {
     var orig = pc.createDataChannel;
     if (typeof orig !== "function") return;
+    nativeCreateChannel.set(pc, orig);
     pc.createDataChannel = function () {
       var dc = orig.apply(pc, arguments);
       wrapDataChannel(dc, pcId, "local", pc);
@@ -375,8 +703,12 @@
       wrappedChannels.add(dc);
       var channelId = "dc" + (++channelSeq);
       var createdAt = Date.now(), everOpened = dc.readyState === "open", autoRequested = false;
-      channels.set(channelId, { dc: dc, pc: pc, pcId: pcId });
-      beacon({ type: "dc-created", pc: pcId, channelId: channelId, label: dc.label, detail: origin, state: dc.readyState });
+      var origSend = dc.send;
+      if (dc.protocol === COLIBRI_PROTOCOL || /^JVB data channel$/i.test(dc.label || "")) { var meta = peerMeta.get(pc); if (meta) meta.colibri = true; }
+      channels.set(channelId, { dc: dc, pc: pc, pcId: pcId, send: origSend, origin: origin, createdAt: createdAt });
+      var created = channelSummary(channelId, channels.get(channelId));
+      created.type = "dc-created"; created.detail = origin; created.binaryType = dc.binaryType;
+      beacon(created);
       function diagnostic(detail, action, error) {
         var event = peerState(pc);
         event.type = "dc-state"; event.pc = pcId; event.channelId = channelId; event.label = dc.label;
@@ -417,16 +749,13 @@
         diagnostic("RTCDataChannel.close() called by page", "close-called");
         return result;
       };
-      var origSend = dc.send;
+      var where = { transport: "datachannel", pc: pcId, channelId: channelId, label: dc.label };
       dc.send = function (data) {
         var result = origSend.apply(dc, arguments);
-        beacon({ type: "dc-send", pc: pcId, channelId: channelId, label: dc.label, bytes: sizeOf(data) });
+        observeOutgoing(data, where);
         return result;
       };
-      dc.addEventListener("message", function (e) {
-        beacon({ type: "dc-recv", pc: pcId, channelId: channelId, label: dc.label, bytes: sizeOf(e && e.data),
-          preview: typeof (e && e.data) === "string" ? e.data.slice(0, 512) : "[binary]" });
-      });
+      dc.addEventListener("message", function (e) { observeIncoming(e && e.data, where); });
       if (dc.readyState === "open") opened();
       else if (dc.readyState === "closed") state();
       else heartbeat();
@@ -436,6 +765,31 @@
   function peerState(pc) {
     return { connectionState: pc.connectionState || "unknown", iceConnectionState: pc.iceConnectionState || "unknown",
       signalingState: pc.signalingState || "unknown", sctpState: pc.sctp && pc.sctp.state || "unknown" };
+  }
+
+  // jvb: Colibri bridge channel; sfu: ICE-lite media server; participant: full-ICE peer.
+  function peerKind(pc) {
+    var meta = pc && peerMeta.get(pc) || {};
+    if (meta.colibri) return "jvb";
+    if (meta.iceLite) return "sfu";
+    if (meta.remote > 0) return "participant";
+    return "unknown";
+  }
+
+  function finiteNumber(value) { return typeof value === "number" && isFinite(value) ? value : null; }
+
+  function channelSummary(channelId, entry) {
+    var dc = entry.dc, pc = entry.pc, sctp = pc && pc.sctp;
+    return { channelId: channelId, pc: entry.pcId, label: dc.label, state: dc.readyState, protocol: dc.protocol || "",
+      ordered: dc.ordered, maxRetransmits: dc.maxRetransmits, maxPacketLifeTime: dc.maxPacketLifeTime, negotiated: dc.negotiated,
+      streamId: dc.id, bufferedAmount: dc.bufferedAmount, origin: entry.origin, peerKind: peerKind(pc),
+      maxMessageSize: sctp ? finiteNumber(sctp.maxMessageSize) : null, maxChannels: sctp ? finiteNumber(sctp.maxChannels) : null,
+      sctpState: sctp && sctp.state || "unknown" };
+  }
+
+  function socketSummary(socketId, entry) {
+    return { socketId: socketId, url: entry.url, state: wsState(entry.ws), bufferedAmount: entry.ws.bufferedAmount,
+      bridge: entry.hints.bridge, conference: entry.hints.conference, endpoint: entry.hints.endpoint };
   }
 
   function rememberSdp(desc) {
@@ -822,34 +1176,50 @@
 
   function pollCommands() {
     if (!COMMAND) return;
+    var interval = 3000;
     function loop() {
       if (unloading) return;
       heartbeat();
       requestBridge({ poll: "1" })
         .then(function (doc) {
-          if (!doc || !Array.isArray(doc.commands)) return;
-          doc.commands.filter(function (c) {
-            return c.type === "dc-fuzz" || c.type === "ice-probe" || c.type === "sdp-fuzz" ||
-              c.type === "capture-stats" || c.type === "signaling-flood" || c.type === "browser-checks";
-          }).forEach(dispatchCommand);
+          if (!doc) return;
+          // A running DataChannel suite asks every page to observe and poll faster.
+          setObserving(doc.observe === true);
+          interval = doc.observe === true ? 500 : 3000;
+          if (!Array.isArray(doc.commands)) return;
+          doc.commands.filter(function (c) { return COMMAND_TYPES.indexOf(c.type) >= 0; }).forEach(dispatchCommand);
         })
         .catch(function () {})
-        .then(function () { setTimeout(loop, 3000); });
+        .then(function () { setTimeout(loop, interval); });
     }
     loop();
   }
 
+  var COMMAND_TYPES = ["dc-fuzz", "ice-probe", "sdp-fuzz", "capture-stats", "signaling-flood", "browser-checks",
+    "dc-suite", "dc-load", "dc-churn", "dc-health", "ws-admission", "transport-action"];
+
+  function runnerTag() {
+    try { return typeof window.__WRTC_RUNNER_SESSION__ === "string" ? window.__WRTC_RUNNER_SESSION__.slice(0, 64) : ""; } catch (e) { return ""; }
+  }
+
   function heartbeat() {
-    return beacon({ type: "agent-state", version: AGENT_VERSION,
+    return beacon({ type: "agent-state", version: AGENT_VERSION, runnerSession: runnerTag(), observing: observing,
+      endpoint: ownEndpoint, endpointHints: endpointHints.slice(0, 32),
+      sockets: Array.from(sockets.entries()).map(function (pair) { return socketSummary(pair[0], pair[1]); }),
+      pcs: peersSeen.slice(-16).map(function (entry) {
+        var s = peerState(entry.pc), sctp = entry.pc.sctp;
+        s.pcId = entry.pcId; s.kind = peerKind(entry.pc);
+        s.maxMessageSize = sctp ? finiteNumber(sctp.maxMessageSize) : null; s.maxChannels = sctp ? finiteNumber(sctp.maxChannels) : null;
+        return s;
+      }),
       iceServers: observedIceServers.reduce(function (urls, s) {
         var list = Array.isArray(s.urls) ? s.urls : [s.urls];
         for (var i = 0; i < list.length; i++) if (list[i] && urls.indexOf(list[i]) < 0) urls.push(list[i]);
         return urls;
       }, []),
       iceServerDetails: observedIceServers,
-      channels: Array.from(channels.entries()).map(function (pair) {
-        return { channelId: pair[0], pc: pair[1].pcId, label: pair[1].dc.label, state: pair[1].dc.readyState };
-      }), completed: completedCommands });
+      channels: Array.from(channels.entries()).map(function (pair) { return channelSummary(pair[0], pair[1]); }),
+      completed: completedCommands });
   }
 
   async function authorized(command) {
@@ -870,6 +1240,12 @@
       if (command.type === "capture-stats") return runCaptureStats(command);
       if (command.type === "signaling-flood") return runSignalingFlood(command);
       if (command.type === "browser-checks") return runBrowserChecks(command);
+      if (command.type === "dc-suite") return runDcSuite(command);
+      if (command.type === "dc-load") return runDcLoad(command);
+      if (command.type === "dc-churn") return runDcChurn(command);
+      if (command.type === "dc-health") return runDcHealth(command);
+      if (command.type === "ws-admission") return runWsAdmission(command);
+      if (command.type === "transport-action") return runTransportAction(command);
       return runIceProbe(command);
     }).catch(function (e) {
       var errType = command.type === "dc-fuzz" ? "fuzz-error"
@@ -877,7 +1253,8 @@
         : command.type === "capture-stats" ? "stats-capture-error"
         : command.type === "signaling-flood" ? "signaling-flood-error"
         : command.type === "browser-checks" ? "browser-checks-error"
-        : "ice-probe-error";
+        : command.type === "ice-probe" ? "ice-probe-error"
+        : command.type + "-error";
       var errorEvent = { type: errType, commandId: command.id, detail: cleanError(e) };
       if (errType === "ice-probe-error") iceProbeEvent(command, errorEvent); else beacon(errorEvent);
       return "failed";
@@ -1216,7 +1593,268 @@
     return "completed";
   }
 
+  function intIn(value, min, max) { return Number.isInteger(value) && value >= min && value <= max; }
+
+  // A runner transport: an open DataChannel or a registered Colibri WebSocket.
+  // Sends use the native method so runner cases are not double-reported as app traffic.
+  function resolveTarget(spec) {
+    if (spec.transport === "colibri-ws") {
+      var s = sockets.get(spec.socketId);
+      if (!s) return null;
+      return { transport: "colibri-ws", id: spec.socketId, label: "colibri-ws", pcId: "", peerKind: "jvb",
+        ready: function () { return s.ws.readyState === 1; }, buffered: function () { return s.ws.bufferedAmount || 0; },
+        state: function () { return { socket: wsState(s.ws) }; }, send: function (data) { s.send.call(s.ws, data); },
+        close: function () { s.ws.close(); } };
+    }
+    var entry = channels.get(spec.channelId);
+    if (!entry) return null;
+    return { transport: "datachannel", id: spec.channelId, label: entry.dc.label, pcId: entry.pcId, peerKind: peerKind(entry.pc),
+      ready: function () { return entry.dc.readyState === "open"; }, buffered: function () { return entry.dc.bufferedAmount || 0; },
+      state: function () { var s = peerState(entry.pc); s.channel = entry.dc.readyState; return s; },
+      send: function (data) { entry.send.call(entry.dc, data); }, close: function () { entry.dc.close(); } };
+  }
+
+  function targetFields(event, target, spec) {
+    event.transport = spec.transport === "colibri-ws" ? "colibri-ws" : "datachannel";
+    event.channelId = spec.channelId || ""; event.socketId = spec.socketId || "";
+    if (target) { event.label = target.label; event.pc = target.pcId; event.peerKind = target.peerKind; }
+    return event;
+  }
+
+  // Sequential runner cases. Each case is re-authorized, built from its parts,
+  // measured in bytes, sent once, then given a settle window before the next.
+  // The stage distinguishes browser rejection from queue acceptance; recipient
+  // receipt and processing are established by other pages' marker reports.
+  async function runDcSuite(command) {
+    var cfg = command.config || {};
+    if (!Array.isArray(cfg.cases) || cfg.cases.length < 1 || cfg.cases.length > 100) throw new Error("Invalid runner case list");
+    if (!intIn(cfg.settleMs, 50, 10000) || !intIn(cfg.maxMessageBytes, 1, 1048576) || !intIn(cfg.maxTotalBytes, 1, 16777216) ||
+      !intIn(cfg.maxBufferedAmount, 1, 16777216)) throw new Error("Invalid runner limits");
+    var total = 0;
+    for (var i = 0; i < cfg.cases.length; i++) {
+      if (!await authorized(command)) return "cancelled";
+      var c = cfg.cases[i] || {}, spec = c.transport ? c : cfg, target = resolveTarget(spec);
+      var event = targetFields({ type: "dc-case", commandId: command.id, caseId: String(c.id || "").slice(0, 96),
+        marker: String(c.marker || "").slice(0, 32), index: i + 1, kind: c.payload && c.payload.kind || "text" }, target, spec);
+      if (!target) { event.stage = "blocked"; event.error = "Target channel or socket no longer exists"; await beacon(event); return "failed"; }
+      event.stateBefore = target.state(); event.bufferedBefore = target.buffered();
+      if (!target.ready()) { event.stage = "blocked"; event.error = "Target is not open"; await beacon(event); return "failed"; }
+      if (event.bufferedBefore > cfg.maxBufferedAmount) { event.stage = "blocked"; event.error = "Send buffer is above the configured cap"; await beacon(event); return "failed"; }
+      var data;
+      try { data = buildPayload(c.payload, cfg.maxMessageBytes); }
+      catch (e) { event.stage = "blocked"; event.error = "Payload not built: " + cleanError(e); await beacon(event); continue; }
+      var bytes = sizeOf(data);
+      event.bytes = bytes; event.preview = previewOf(data);
+      if (typeof data === "string") { event.textHash = hash32(data); var envelope = parseEnvelope(data); if (envelope) event.payloadHash = envelope.payloadHash; }
+      if (total + bytes > cfg.maxTotalBytes) { event.stage = "blocked"; event.error = "Run byte budget exhausted"; await beacon(event); return "failed"; }
+      total += bytes;
+      event.sentAt = Date.now();
+      try { target.send(data); event.stage = "queued"; }
+      catch (e) { event.stage = "browser-rejected"; event.error = cleanError(e); }
+      event.bufferedAfter = target.buffered();
+      await delay(intIn(c.settleMs, 50, 10000) ? c.settleMs : cfg.settleMs);
+      event.settledAt = Date.now(); event.stateAfter = target.state(); event.bufferedSettled = target.buffered();
+      event.detail = event.caseId + ": " + event.stage + " (" + bytes + " bytes" + (event.error ? "; " + event.error : "") + ")";
+      await beacon(event);
+      if (!target.ready()) return "failed";
+    }
+    return "completed";
+  }
+
+  // One bounded load step: a fixed message rate for a duration, or a burst.
+  // Messages carry sequential markers so recipients can measure delivery and latency.
+  async function runDcLoad(command) {
+    var cfg = command.config || {};
+    if (["rate", "burst"].indexOf(cfg.mode) < 0 || !/^wrtc[0-9a-z]{8}$/.test(cfg.markerStem || "") ||
+      !intIn(cfg.maxMessages, 1, 10000) || !intIn(cfg.maxBytes, 1, 16777216) || !intIn(cfg.maxBufferedAmount, 1, 16777216) ||
+      typeof cfg.prefix !== "string" || typeof cfg.suffix !== "string" || cfg.prefix.length + cfg.suffix.length > 16384 ||
+      (cfg.mode === "rate" && (!intIn(cfg.rate, 1, 200) || !intIn(cfg.durationMs, 100, 60000))) ||
+      (cfg.mode === "burst" && !intIn(cfg.count, 1, 1000))) throw new Error("Invalid load limits");
+    var target = resolveTarget(cfg);
+    if (!target || !target.ready()) throw new Error("Load target is not open");
+    var sent = 0, rejected = 0, bytes = 0, maxBuffered = 0, seq = intIn(cfg.firstSeq, 0, 1000000) ? cfg.firstSeq : 0, first = seq;
+    var stop = "", lastError = "", started = Date.now();
+    function sendOne() {
+      if (!target.ready()) { stop = "target-closed"; return false; }
+      var buffered = target.buffered();
+      if (buffered > maxBuffered) maxBuffered = buffered;
+      if (buffered > cfg.maxBufferedAmount) { stop = "backpressure"; return false; }
+      var marker = cfg.markerStem + ("000" + seq.toString(36)).slice(-4), text = cfg.prefix + marker + cfg.suffix, size = sizeOf(text);
+      if (sent + rejected >= cfg.maxMessages || bytes + size > cfg.maxBytes) { stop = "budget"; return false; }
+      seq++;
+      try { target.send(text); sent++; bytes += size; } catch (e) { rejected++; lastError = cleanError(e); }
+      return true;
+    }
+    if (cfg.mode === "burst") {
+      for (var i = 0; i < cfg.count; i++) if (!sendOne()) break;
+    } else {
+      var interval = 1000 / cfg.rate, end = started + cfg.durationMs, due = started, lastAuth = started;
+      while (Date.now() < end && !stop) {
+        if (Date.now() - lastAuth >= 500) {
+          if (!await authorized(command)) { stop = "cancelled"; break; }
+          lastAuth = Date.now();
+        }
+        while (due <= Date.now() && Date.now() < end) { if (!sendOne()) break; due += interval; }
+        if (!stop) await delay(Math.max(5, Math.min(100, Math.round(due - Date.now()))));
+      }
+    }
+    await beacon(targetFields({ type: "dc-load-step", commandId: command.id, mode: cfg.mode, rate: cfg.rate || null,
+      durationMs: cfg.durationMs || null, planned: cfg.mode === "burst" ? cfg.count : Math.round(cfg.rate * cfg.durationMs / 1000),
+      sent: sent, rejected: rejected, bytes: bytes, maxBuffered: maxBuffered, bufferedEnd: target.buffered(), markerStem: cfg.markerStem,
+      firstSeq: first, lastSeq: seq - 1, startedAt: started, endedAt: Date.now(), stopReason: stop, error: lastError,
+      detail: cfg.mode + " step: " + sent + " sent, " + rejected + " rejected" + (stop ? "; stopped: " + stop : "") }, target, cfg));
+    return stop === "cancelled" ? "cancelled" : "completed";
+  }
+
+  // Bounded channel churn on an application peer that already has a connected SCTP
+  // association (so no renegotiation is triggered). Channels use the native factory.
+  async function runDcChurn(command) {
+    var cfg = command.config || {};
+    if (["sequential", "concurrent"].indexOf(cfg.mode) < 0 || !intIn(cfg.iterations, 1, 64) || !intIn(cfg.openTimeoutMs, 500, 15000) ||
+      !Array.isArray(cfg.variants) || cfg.variants.length < 1 || cfg.variants.length > 8) throw new Error("Invalid churn limits");
+    var entry = peersSeen.find(function (e) { return e.pcId === cfg.pcId; });
+    if (!entry) throw new Error("Peer " + cfg.pcId + " is not on this page");
+    var pc = entry.pc;
+    if (!pc.sctp || pc.sctp.state !== "connected") throw new Error("No connected SCTP association on " + cfg.pcId + "; creating channels would trigger renegotiation");
+    var create = nativeCreateChannel.get(pc) || pc.createDataChannel;
+    var allowed = ["ordered", "maxRetransmits", "maxPacketLifeTime", "protocol", "negotiated", "id"];
+    function open(index) {
+      var variant = cfg.variants[index % cfg.variants.length] || {}, options = {};
+      allowed.forEach(function (k) { if (variant[k] !== undefined && variant[k] !== null) options[k] = variant[k]; });
+      if (options.negotiated && Number.isInteger(options.id)) options.id = options.id + index;
+      var label = typeof variant.label === "string" ? variant.label.slice(0, 65535) : "wrtc-churn-" + index;
+      var result = { type: "dc-churn-result", commandId: command.id, pc: cfg.pcId, index: index + 1, variant: String(variant.name || ""),
+        label: label.slice(0, 128), labelBytes: sizeOf(label), requested: options }, started = Date.now(), dc;
+      try { dc = create.call(pc, label, options); }
+      catch (e) { result.outcome = "create-rejected"; result.error = cleanError(e); return Promise.resolve(result); }
+      result.streamId = dc.id; result.ordered = dc.ordered; result.maxRetransmits = dc.maxRetransmits;
+      result.maxPacketLifeTime = dc.maxPacketLifeTime; result.negotiated = dc.negotiated; result.protocolBytes = sizeOf(dc.protocol || "");
+      return new Promise(function (resolve) {
+        var done = false;
+        function finish(outcome, error) { if (done) return; done = true; clearTimeout(timer); result.outcome = outcome; if (error) result.error = error; result.openMs = Date.now() - started; result.dc = dc; resolve(result); }
+        var timer = setTimeout(function () { finish("timeout"); }, cfg.openTimeoutMs);
+        dc.addEventListener("open", function () { finish("open"); });
+        dc.addEventListener("close", function () { finish("closed-before-open"); });
+        dc.addEventListener("error", function (e) { finish("error", e && e.error ? cleanError(e.error) : "channel error"); });
+        if (dc.readyState === "open") finish("open");
+      });
+    }
+    function close(result) {
+      if (result.dc) { try { result.dc.close(); } catch (e) {} result.finalState = result.dc.readyState; delete result.dc; }
+      result.detail = "Channel " + result.index + " (" + (result.variant || "default") + "): " + result.outcome + (result.error ? " — " + result.error : "");
+      return beacon(result);
+    }
+    var outcomes = { open: 0 }, list = [], cancelled = false;
+    for (var i = 0; i < cfg.iterations; i++) {
+      if (!await authorized(command)) { cancelled = true; break; }
+      var result = await open(i);
+      outcomes[result.outcome] = (outcomes[result.outcome] || 0) + 1;
+      if (cfg.mode === "concurrent") list.push(result); else { await close(result); await delay(100); }
+    }
+    for (var j = 0; j < list.length; j++) await close(list[j]);
+    await beacon({ type: "dc-churn-summary", commandId: command.id, pc: cfg.pcId, mode: cfg.mode, attempted: cfg.iterations,
+      outcomes: outcomes, maxChannels: finiteNumber(pc.sctp.maxChannels), connectionState: pc.connectionState, sctpState: pc.sctp.state,
+      detail: cfg.mode + " churn: " + (outcomes.open || 0) + "/" + cfg.iterations + " channel(s) opened; peer " + pc.connectionState });
+    return cancelled ? "cancelled" : "completed";
+  }
+
+  // Session health: peer, channel and socket states plus DataChannel and media
+  // statistics, compared by Burp before and after each case group or load step.
+  async function runDcHealth(command) {
+    var peers = [];
+    var live = peersSeen.slice(-16);
+    for (var i = 0; i < live.length; i++) {
+      var pc = live[i].pc, item = peerState(pc);
+      item.pcId = live[i].pcId; item.kind = peerKind(pc);
+      if (pc.connectionState !== "closed" && pc.getStats) {
+        try {
+          var report = await pc.getStats(null), media = { packetsReceived: 0, packetsLost: 0, framesDecoded: 0, framesDropped: 0, jitterMax: 0 }, data = [];
+          report.forEach(function (s) {
+            if (s.type === "inbound-rtp" && !s.isRemote) {
+              media.packetsReceived += statNumber(s.packetsReceived) || 0; media.packetsLost += statNumber(s.packetsLost) || 0;
+              media.framesDecoded += statNumber(s.framesDecoded) || 0; media.framesDropped += statNumber(s.framesDropped) || 0;
+              if (typeof s.jitter === "number" && s.jitter > media.jitterMax) media.jitterMax = s.jitter;
+              if (typeof s.framesPerSecond === "number") media.framesPerSecond = Math.max(media.framesPerSecond || 0, s.framesPerSecond);
+            } else if (s.type === "candidate-pair" && (s.selected || s.nominated) && s.state === "succeeded" && typeof s.currentRoundTripTime === "number") {
+              item.rttMs = Math.round(s.currentRoundTripTime * 1000);
+            } else if (s.type === "data-channel") {
+              data.push({ label: s.label, protocol: s.protocol, state: s.state, messagesSent: statNumber(s.messagesSent),
+                bytesSent: statNumber(s.bytesSent), messagesReceived: statNumber(s.messagesReceived), bytesReceived: statNumber(s.bytesReceived) });
+            } else if (s.type === "peer-connection") {
+              item.dataChannelsOpened = statNumber(s.dataChannelsOpened); item.dataChannelsClosed = statNumber(s.dataChannelsClosed);
+            }
+          });
+          item.media = media; item.dataChannels = data.slice(0, 16);
+        } catch (e) { item.statsError = cleanError(e); }
+      }
+      peers.push(item);
+    }
+    var channelList = Array.from(channels.entries()).map(function (pair) { return channelSummary(pair[0], pair[1]); });
+    var socketList = Array.from(sockets.entries()).map(function (pair) { return socketSummary(pair[0], pair[1]); });
+    await beacon({ type: "dc-health", commandId: command.id, peers: peers, channels: channelList, sockets: socketList,
+      pageErrors: pageErrorCount, t: Date.now(), detail: peers.length + " peer(s), " + channelList.filter(function (c) { return c.state === "open"; }).length +
+        " open channel(s), " + socketList.filter(function (s) { return s.state === "open"; }).length + " open Colibri socket(s)" });
+    return "completed";
+  }
+
+  // Fresh Colibri WebSocket admission attempt with a tester-chosen URL (wrong pwd,
+  // another conference or endpoint, or a URL from an ended session). The socket
+  // is unwrapped, closed afterwards and never used by the application.
+  async function runWsAdmission(command) {
+    var cfg = command.config || {};
+    if (!NativeWebSocket) throw new Error("WebSocket is unavailable in this page");
+    if (!/^wss?:\/\//i.test(cfg.url || "") || cfg.url.length > 4096 || !intIn(cfg.timeoutMs, 1000, 15000) ||
+      (cfg.send !== undefined && (typeof cfg.send !== "string" || cfg.send.length > 16384))) throw new Error("Invalid WebSocket admission settings");
+    var started = Date.now(), messages = 0, first = "", opened = false, code = null, reason = "", ws;
+    try { ws = new NativeWebSocket(cfg.url); } catch (e) { throw new Error("WebSocket constructor rejected the URL: " + cleanError(e)); }
+    var outcome = await new Promise(function (resolve) {
+      var timer = setTimeout(function () { resolve(opened ? "open-timeout" : "connect-timeout"); }, cfg.timeoutMs);
+      ws.addEventListener("open", function () { opened = true; if (cfg.send) { try { ws.send(cfg.send); } catch (e) {} } });
+      ws.addEventListener("message", function (e) {
+        messages++;
+        if (!first) first = typeof e.data === "string" ? e.data.slice(0, 2048) : "[binary]";
+        clearTimeout(timer); resolve("message");
+      });
+      ws.addEventListener("close", function (e) { code = e && e.code; reason = e && e.reason || ""; clearTimeout(timer); resolve("closed"); });
+      ws.addEventListener("error", function () {});
+    });
+    try { ws.close(); } catch (e) {}
+    var envelope = parseEnvelope(first);
+    await beacon({ type: "ws-admission-result", commandId: command.id, caseId: String(cfg.caseId || "").slice(0, 96), url: cfg.url,
+      opened: opened, outcome: outcome, closeCode: code, closeReason: String(reason).slice(0, 256), messages: messages,
+      firstMessage: first, firstClass: envelope ? envelope.colibriClass : "", elapsedMs: Date.now() - started,
+      detail: "Admission " + (opened ? "opened" : "not opened") + "; " + outcome + (envelope && envelope.colibriClass ? "; first " + envelope.colibriClass : "") });
+    return "completed";
+  }
+
+  // Close the application's own transport and measure whether the page reconnects.
+  async function runTransportAction(command) {
+    var cfg = command.config || {};
+    if (["close-ws", "close-channel"].indexOf(cfg.action) < 0 || !intIn(cfg.waitMs, 1000, 30000)) throw new Error("Invalid transport action");
+    var spec = cfg.action === "close-ws" ? { transport: "colibri-ws", socketId: cfg.socketId } : { channelId: cfg.channelId };
+    var target = resolveTarget(spec);
+    if (!target || !target.ready()) throw new Error("Transport is not open");
+    var before = cfg.action === "close-ws" ? Array.from(sockets.keys()) : Array.from(channels.keys()), label = target.label;
+    var closedAt = Date.now(), reopened = "", reopenMs = null;
+    target.close();
+    while (Date.now() - closedAt < cfg.waitMs) {
+      await delay(250);
+      if (!await authorized(command)) return "cancelled";
+      var fresh = cfg.action === "close-ws"
+        ? Array.from(sockets.entries()).find(function (p) { return before.indexOf(p[0]) < 0 && p[1].ws.readyState === 1; })
+        : Array.from(channels.entries()).find(function (p) { return before.indexOf(p[0]) < 0 && p[1].dc.readyState === "open" && p[1].dc.label === label; });
+      if (fresh) { reopened = fresh[0]; reopenMs = Date.now() - closedAt; break; }
+    }
+    await beacon({ type: "transport-action-result", commandId: command.id, caseId: String(cfg.caseId || "").slice(0, 96), action: cfg.action,
+      closed: target.id, reopened: reopened, reopenMs: reopenMs, closedAt: closedAt,
+      detail: cfg.action + " " + target.id + ": " + (reopened ? "application reopened " + reopened + " after " + reopenMs + " ms" : "no replacement within " + cfg.waitMs + " ms") });
+    return "completed";
+  }
+
+  try { Object.defineProperty(window, "__wrtcAgentId", { value: AGENT_ID, configurable: false, enumerable: false, writable: false }); } catch (e) {}
   try { wrapPeerConnection(); } catch (e) {}
+  try { wrapWebSocket(); } catch (e) {}
+  try { watchPageErrors(); } catch (e) {}
   try { wrapGetUserMedia(); } catch (e) {}
   try { installCanary(); } catch (e) {}
   try { wrapMessaging(); } catch (e) {}

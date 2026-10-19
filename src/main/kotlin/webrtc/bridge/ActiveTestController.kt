@@ -18,7 +18,9 @@ class ActiveTestController(
     private val now: () -> Long = System::currentTimeMillis
 ) {
     data class Channel(val id: String, val pc: String, val label: String, val state: String)
-    data class Agent(val id: String, val frame: String, val seen: Long, val channels: List<Channel>, val iceUrls: List<String> = emptyList(), val version: String = "") {
+    data class Agent(val id: String, val frame: String, val seen: Long, val channels: List<Channel>, val iceUrls: List<String> = emptyList(), val version: String = "",
+                     /** The latest full heartbeat: channel details, Colibri sockets, peers and the runner session tag. */
+                     val state: JsonObject = JsonObject(emptyMap())) {
         override fun toString() = "${id.takeLast(8)} | $frame"
     }
     private data class Job(
@@ -31,6 +33,9 @@ class ActiveTestController(
     private val activeStates = setOf("queued", "running")
     private var nextOpenFuzz: DataChannelFuzzConfig? = null
     private var automaticFuzzJob: String? = null
+
+    /** While a DataChannel runner suite is active, every page observes (DOM markers, hash receipts) and polls faster. */
+    @Volatile var observing: Boolean = false
 
     /** Session-only, one-shot arming; payload settings may be persisted, arming is never restored. */
     @Synchronized fun armNextOpenFuzz(settings: DataChannelFuzzConfig) {
@@ -78,7 +83,7 @@ class ActiveTestController(
                 Channel(c.str("channelId"), c.str("pc"), c.str("label"), c.str("state"))
             }
             val iceUrls = (obj["iceServers"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.take(32)
-            agents[id] = Agent(id, frame, now(), channels, iceUrls, obj.str("version"))
+            agents[id] = Agent(id, frame, now(), channels, iceUrls, obj.str("version"), obj)
             while (agents.size > 256) agents.remove(agents.keys.first())
             (obj["completed"] as? JsonArray).orEmpty().take(32).forEach { value ->
                 val result = value as? JsonObject ?: return@forEach
@@ -138,6 +143,17 @@ class ActiveTestController(
         }, null)
     }
 
+    /**
+     * DataChannel runner commands. Payload caps are re-checked in the agent; [endpoint]
+     * (WebSocket admission) must itself be allow-listed and in Burp Target scope.
+     */
+    @Synchronized fun queueRunnerCommand(agentId: String, type: String, config: JsonObject, endpoint: String? = null, lifetimeMs: Long = 90000): String {
+        require(type in RUNNER_COMMANDS) { "Unknown runner command $type" }
+        require(config.toString().length <= 1_048_576) { "Runner command exceeds 1 MiB; use smaller case groups" }
+        require(endpoint == null || pageAllowed(endpoint)) { "Allow the endpoint host and add it to Burp Target scope: $endpoint" }
+        return enqueue(freshAgent(agentId), type, buildJsonObject { put("config", config) }, endpoint, lifetimeMs.coerceIn(5000, 300000))
+    }
+
     @Synchronized fun jobState(id: String): String? { expire(); return jobs[id]?.state }
 
     fun endpointAllowed(url: String): Boolean = runCatching { pageAllowed(IceEndpoint.parse(url).scopeUrl) }.getOrDefault(false)
@@ -149,11 +165,11 @@ class ActiveTestController(
         return agent
     }
 
-    private fun enqueue(agent: Agent, type: String, payload: JsonObject, endpoint: String?): String {
+    private fun enqueue(agent: Agent, type: String, payload: JsonObject, endpoint: String?, lifetimeMs: Long = 90000): String {
         expire()
         require(jobs.values.none { it.agent == agent.id && it.state in activeStates }) { "This page already has an active test; stop it before starting another" }
         require(jobs.values.count { it.state in activeStates } < 32) { "Too many active tests" }
-        val job = Job(UUID.randomUUID().toString(), agent.id, agent.frame, type, payload, endpoint, now() + 90000)
+        val job = Job(UUID.randomUUID().toString(), agent.id, agent.frame, type, payload, endpoint, now() + lifetimeMs)
         jobs[job.id] = job
         while (jobs.size > 256) jobs.values.firstOrNull { it.state !in activeStates }?.let { jobs.remove(it.id) } ?: break
         record(job, "queued")
@@ -196,6 +212,7 @@ class ActiveTestController(
 
     @Synchronized fun cancelAll() {
         nextOpenFuzz = null
+        observing = false
         jobs.values.filter { it.state in activeStates }.forEach { transition(it, "cancelled") }
     }
 
@@ -216,4 +233,8 @@ class ActiveTestController(
     }
 
     private fun JsonObject.str(key: String) = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+    companion object {
+        val RUNNER_COMMANDS = setOf("dc-suite", "dc-load", "dc-churn", "dc-health", "ws-admission", "transport-action")
+    }
 }

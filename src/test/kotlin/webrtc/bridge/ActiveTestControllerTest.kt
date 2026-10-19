@@ -51,6 +51,18 @@ class ActiveTestControllerTest {
         assertFailsWith<IllegalArgumentException> { controller.queueIce("agent-a", IceProbeConfig()) }
     }
 
+    @Test fun `runner commands are whitelisted, size-bounded and endpoint-gated`() {
+        heartbeat()
+        val id = controller.queueRunnerCommand("agent-a", "dc-health", buildJsonObject { })
+        assertEquals("dc-health", (controller.commands("agent-a", frame).single()["type"] as JsonPrimitive).content)
+        controller.cancelJob(id)
+        assertFailsWith<IllegalArgumentException> { controller.queueRunnerCommand("agent-a", "eval", buildJsonObject { }) }
+        assertFailsWith<IllegalArgumentException> { controller.queueRunnerCommand("agent-a", "dc-suite", buildJsonObject { put("x", "A".repeat(1_100_000)) }) }
+        assertFailsWith<IllegalArgumentException> { controller.queueRunnerCommand("agent-a", "ws-admission", buildJsonObject { }, "https://elsewhere.test:443/") }
+        // Observing is a session flag cleared by Stop.
+        controller.observing = true; controller.cancelAll(); assertFalse(controller.observing)
+    }
+
     @Test fun `sdp fuzz enqueues a command and validates settings`() {
         heartbeat()
         val id = controller.queueSdpFuzz("agent-a", SdpFuzzConfig())

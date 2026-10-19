@@ -11,17 +11,170 @@ configuration (Module 0), persisted in the Burp project file.
 > ICE probing, replay) is gated on Burp **Target scope**. Credentials are preserved
 > in full; captured session candidates are held in memory.
 
-## Current status (2026-10-13)
+## Current status (2026-10-19)
 
-**Version 1.2.0.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.2.0** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
-scenarios and the default TLS engine run on the JVM inside Burp; Python is needed
-only if you choose the SSLyze engine.
-Validated: **185 JVM tests passed** with one opt-in SSLyze integration test skipped;
-**42 agent tests** and **11 Python tests** (optional SSLyze adapter and the retired
-runner) passed. The fat JAR builds and reports Implementation-Version 1.2.0.
-Unit tests use local fixtures. Behaviour against a real TURN server, Burp
-Collaborator and a live Burp session has not yet been exercised for 1.2.0.
+**Version 1.3.0.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
+**1.3.0** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
+scenarios, the default TLS engine and the new DataChannel runner run on the JVM
+inside Burp; Python is needed only if you choose the SSLyze engine.
+Validated: **203 JVM tests passed**, with two opt-in tests skipped by default (the
+SSLyze integration test and the live browser-runner test), and **55 agent tests**
+passed. The DataChannel runner is tested end to end against simulated pages and a
+simulated bridge.
+
+Real-browser checks (Microsoft Edge / Chromium):
+
+- `agent/browser-smoke.cjs` confirms that runner cases reach the real remote end of a
+  DataChannel with marker receipts.
+- The browser itself rejects a send one byte above maxMessageSize (`TypeError`).
+- The opt-in live test (set `CHROME_PATH`) drives the integrated runner over
+  DevTools: launch, session tagging before page scripts, fill / click / wait steps,
+  evaluate and close.
+
+The runner has not yet been exercised against a live Jitsi / LiveBank deployment.
+
+### 1.3.0 — DataChannel test runner with paired-session observation
+
+**Tests → Data channel runner** (also selectable as *Data channel runner* in Scan
+All) runs DataChannel and Colibri bridge-channel tests from one sender page while
+every other instrumented page observes. Each case carries a unique marker
+(`wrtc` + 12 characters). Recipients report what they **received** (DataChannel or
+Colibri WebSocket), **rendered** (DOM) or **threw on** (page errors). A successful
+`send()` or silence is never a pass.
+
+*Classification.* Every case is PASS, FAIL, INCONCLUSIVE, BLOCKED or NOT APPLICABLE:
+
+- **PASS** needs recipient-side evidence: a delivered positive control, and a
+  delivery probe after the case (one probe every *N* cases).
+- **FAIL** means one of:
+  - an unauthorized participant received or rendered the message;
+  - a spoofed `from` reached a recipient;
+  - an application error carried the case marker;
+  - session health was lost.
+- **INCONCLUSIVE** covers a browser-side rejection (never treated as server
+  validation), a missing observer, an unknown identifier and a failed control.
+- **BLOCKED** covers a closed channel, an exhausted budget and missing call
+  controls.
+- **NOT APPLICABLE** marks a transport or architecture the application does not use.
+
+When a probe fails, the runner waits for recovery. It then re-runs that group
+one case at a time, so the case that broke the session is found.
+
+*Families* (each maps to a coverage row):
+
+- **Channel discovery and baseline.** The agent records every channel: label,
+  protocol, ordered, maxRetransmits, maxPacketLifeTime, negotiated, stream ID,
+  bufferedAmount and lifecycle. It also records SCTP maxMessageSize, maxChannels
+  and state, and the Colibri WebSocket URL hints.
+  - Peers are classified as **JVB** (Colibri protocol/label), **SFU** (ICE-lite
+    remote) or **participant**.
+  - Before testing, the runner learns sample messages per class, takes a health
+    snapshot and runs a positive control. Unavailable channels are BLOCKED.
+  - The proxy injector now places the agent before the page's first head
+    `<script>`, so hooks exist before application startup.
+- **Application-message fuzzing.** Templates come from observed messages first,
+  then from version-aware Colibri schemas. Generations are endpoint-based (≤2.1),
+  source names (2.2) and source maps (2.3+). The generation is taken from the
+  configured version, then ServerHello, then the observed classes.
+  - Each case changes one field or one structural property: missing, null, wrong
+    type, negative or oversized numbers, int64 overflow, long strings, raw Unicode
+    and control escapes (including lone surrogates), and nesting up to the bound.
+  - Whole-message cases: extra fields, duplicate keys, unknown / case-changed /
+    missing `colibriClass`, and malformed JSON (truncated, trailing comma, single
+    quotes, unquoted keys, NaN, comments, BOM, trailing garbage, top-level array
+    or string).
+  - Malformed EndpointStats are included. Non-forwarded control classes must reach
+    nobody. `msgPayload` content is relayed by design and judged at the receivers.
+- **Binary and size boundaries.** Payload types: text, ArrayBuffer, Uint8Array,
+  Int16Array, Float64Array, DataView and Blob.
+  - Payloads: empty, 1-byte, zero-filled, seeded random (reproducible) and JSON
+    sent as binary.
+  - Sizes: 16 KiB, 64 KiB, a multi-byte UTF-8 character across 16 KiB, and
+    maxMessageSize − 1 / = / + 1 within the per-message cap. Sizes are measured in
+    UTF-8 bytes.
+- **Message authorization and isolation.**
+  - Delivery: unicast to the intended recipient (other participants must not
+    receive it), and broadcast that stays out of the test room.
+  - Tampered addressing: cross-room unicast, an unknown endpoint, and an array
+    recipient.
+  - Identity spoofing: a spoofed `from` (call participant and test-room
+    endpoint), and injected conference / room fields.
+  - Direction: every server-to-client class sent by a client, and a video-type
+    change for another participant's source.
+  - Colibri WebSocket admission with a wrong pwd, no pwd, another conference, or
+    another endpoint (the victim is checked for displacement).
+  - Optional **protected messages**: advisor-only commands with a state probe. The
+    allowed role is the positive control, state is restored, then the denied role
+    is tested.
+- **Replay and lifecycle.** Exact in-session replays are matched by payload hash.
+  With runner sessions, the runner automates:
+  - customer leave (closure correlated with the action; an old channel that still
+    delivers is a FAIL);
+  - re-join with stale replays and the old Colibri URL;
+  - a network interruption with reconnect;
+  - advisor hang-up, then a fresh admission attempt and the ended call's URL;
+  - removal and re-admission.
+
+  State is restored afterwards.
+- **Bounded load and channel churn.** Configurable rate steps and a burst, with
+  sequential markers for delivery ratio and estimated p95 latency.
+  - Health and media packet loss are compared with the baseline. The run stops at
+    the first degradation threshold and records recovery.
+  - Churn runs sequentially (reliability variants, long label / protocol, an
+    invalid combination) and concurrently up to the channel cap. It runs only on a
+    connected SCTP association, so no renegotiation is triggered.
+- **Colibri transport comparison.** When both an RTCDataChannel and a Colibri
+  WebSocket carry bridge messages, equivalent cases run on the second transport
+  and differences are listed. A Colibri WebSocket reconnect is also tested.
+  Results are tagged with the transport actually used.
+
+*Integrated browser runner.* It launches one isolated Chromium per session:
+
+- The browser is Burp's bundled Chromium, Chrome or Edge, routed through the Burp
+  proxy listener, with fake camera and microphone and a persistent or temporary
+  profile.
+- Every frame is tagged with the session name before page scripts run, and Setup
+  identities are applied (cookies and headers).
+- Call controls are per session: Join, Leave, Hang up, Remove and an endpoint
+  expression.
+- Each control is a script of steps: `navigate`, `click`, `fill`, `wait`,
+  `waitjs`, `eval`, `sleep`, `reload`, `offline` and `waitchannel`.
+- Selectors cross iframes and shadow roots with `>>>`; `@<url text>` targets a
+  cross-origin frame.
+- Start URLs and `navigate` targets must be allow-listed and in Burp scope.
+
+*Configuration* (persisted): families, case / byte / duration budgets, settle
+window, probe interval, buffer and nesting caps, load steps and degradation
+thresholds, seed, Jitsi version, probe template, test-room endpoint, re-join
+expectations, protected messages and an optional bridge-log file. New error
+lines are attached to the run; lines with a case marker are attached to that case.
+
+*Evidence and reporting.* Each result is a `dc-case-result` event in Evidence and
+a row in the M7 DataChannel (or DoS, for load) section. A result records:
+
+- case ID, payload or seed, direction, sender identity / role / room / endpoint
+  and transport;
+- timestamps, the local exception, bufferedAmount and states before and after;
+- every recipient observation with latency, the probe outcome, recovery and
+  bridge-log lines.
+
+Runs persist in the project, export as JSON and roll up into registry tests
+DCH-01/02/03. The **Coverage** tab maps every RTCDataChannel scope item to the
+executed case IDs and the remaining limitations. Credentials, pwd parameters and
+payloads are kept in full, following the project's no-masking policy.
+
+*Not covered (separate harness).* Native SCTP / DCEP packet fuzzing is out of
+scope: browser JavaScript cannot craft SCTP chunks, fragmentation, stream resets
+or DCEP packets. It is listed as its own coverage item (registry DCH-04) for a
+DTLS/SCTP-capable test peer with crash and log collection.
+
+New agent events: `dc-case`, `dc-markers`, `dc-health`, `dc-load-step`,
+`dc-churn-result`, `dc-churn-summary`, `ws-admission-result`,
+`transport-action-result`, `page-error`, `ws-colibri`, `ws-colibri-send`,
+`ws-colibri-recv` and the matching `*-error` types. Burp-side events:
+`dc-case-result`, `dc-runner`, `runner-action` and `bridge-log`. Scan All selection
+version 4 adds the runner once to existing non-empty selections. Reload browser
+pages so they pick up agent 1.3.0.
 
 ### 1.2.0 — self-contained runners, video banking (advisor / customer) testing, Burp issues
 

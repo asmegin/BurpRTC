@@ -1,5 +1,12 @@
 # TODO — comprehensive WebRTC pentesting from Burp
 
+**1.3.0 update (2026-10-19):** The DataChannel runner (Tests → Data channel runner)
+implements DCH-01 (discovery, size boundaries, reliability-variant churn), DCH-02
+(Colibri / application message fuzzing, authorization, isolation, replay, lifecycle)
+and DCH-03 (bounded load, backpressure, channel quotas). It uses recipient-side
+verification and an integrated browser runner. DCH-04 (native SCTP / DCEP harness)
+remains open as a separate test peer.
+
 **1.2.0 update (2026-10-13):** The extension is self-contained. STUN/TURN tests,
 HTTP/WebSocket scenarios and the default TLS engine run on the JVM inside Burp, and
 Python is only needed for the optional SSLyze engine. TRN-04/05 verify forwarding
@@ -514,21 +521,21 @@ an ICE candidate do not provide these tests. The protocol baseline is
 
 ## DataChannel and SCTP
 
-- [ ] **DCH-01 · P1 · Browser + Paired · Negotiation matrix (T11).** Test
+- [x] **DCH-01 · P1 · Browser + Paired · Negotiation matrix (T11).** *(1.3.0: DataChannel runner discovery, size boundaries and reliability-variant churn; negotiated-ID collisions and reopening are partial.)* Test
   ordered/unordered delivery, partial reliability, invalid parameter combinations,
   negotiated-ID collisions, label/protocol lengths, binary/text types, stream
   closure/reset and reopening. Compare both endpoints' channel state and receipt.
   Retain M4 budgets and short-lived-channel support.
   [DataChannel specification](https://www.rfc-editor.org/rfc/rfc8831.html).
 
-- [ ] **DCH-02 · P1 · Paired · Message authorization and injection.** Test
+- [x] **DCH-02 · P1 · Paired · Message authorization and injection.** *(1.3.0: DataChannel runner authorization, isolation, replay and lifecycle with recipient observation; file-transfer specifics need protected-message definitions.)* Test
   room/role enforcement for chat, file transfer, commands, collaborative actions
   and data topics; replay across participants and after removal. Exercise schemas,
   duplicate/out-of-order messages, and bounded file-name/path/type handling where
   supported. Done when a send result is paired with an observed remote effect or
   rejection, including applications where data is relayed by an SFU.
 
-- [ ] **DCH-03 · P2 · Browser + Paired · Backpressure and channel quotas.**
+- [x] **DCH-03 · P2 · Browser + Paired · Backpressure and channel quotas.** *(1.3.0: DataChannel runner load steps, bursts, backpressure stop and concurrent channel churn.)*
   Measure `bufferedAmount`, negotiated message-size limits, concurrent channels,
   receiver processing, memory and recovery under bounded bursts. Include
   send-after-close and slow consumer scenarios. Record whether media quality is

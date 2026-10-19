@@ -52,6 +52,10 @@ data class WebRtcConfig(
     var scanPlan: ScanPlan = ScanPlan(),
     var protocolScan: ProtocolScanConfig = ProtocolScanConfig(),
     var assessment: webrtc.assessment.AssessmentConfig = webrtc.assessment.AssessmentConfig(),
+    /** DataChannel runner budgets, families and expectations. */
+    var dataChannelSuite: webrtc.datachannel.DcSuiteConfig = webrtc.datachannel.DcSuiteConfig(),
+    /** Integrated browser runner sessions and call controls. */
+    var browserRunner: webrtc.datachannel.BrowserRunnerConfig = webrtc.datachannel.BrowserRunnerConfig(),
     /** Add confirmed and likely findings to Burp's Issues list (Target > Site map). */
     var burpIssues: Boolean = true,
     /** "generic" or "banking" (advisor / customer video banking guidance and defaults). */

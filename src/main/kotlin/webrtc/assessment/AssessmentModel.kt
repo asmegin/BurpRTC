@@ -20,7 +20,10 @@ object TestRegistry {
     val automaticTests: Set<String> = definitions.map { it.id }.filter { it in passiveTests || it in automaticProtocolTests }.toSet()
     val scenarioTests = definitions.filter { it.id.startsWith("SIG-") || it.id.startsWith("APP-") || it.id.startsWith("SFU-") ||
         it.id in setOf("TRN-03", "DCH-02", "WEB-03", "RES-01", "RES-03", "ICE-01", "ICE-05", "SDP-02", "SDP-03", "DTL-03", "MED-02", "SIP-02", "SIP-04") }.map { it.id }.toSet() - setOf("SIG-01", "APP-04", "WEB-03")
+    /** Executed by the DataChannel runner (Tests → Data channel runner), which records their outcomes. */
+    val dataChannelTests = setOf("DCH-01", "DCH-02", "DCH-03")
     fun capability(id: String, config: AssessmentConfig): String = when {
+        id in dataChannelTests && config.scenarios.none { it.testId == id } -> "DataChannel runner"
         id in passiveTests -> "Passive analysis"
         id in protocolTests -> "Built-in TURN runner"
         id in scenarioTests && config.scenarios.any { it.testId == id } -> "Configured scenario"

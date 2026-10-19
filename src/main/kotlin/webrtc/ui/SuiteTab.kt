@@ -33,6 +33,9 @@ class SuiteTab(
     canaries: webrtc.canary.CanaryRegistry? = null,
     private val issues: webrtc.burp.IssueReporter? = null,
     collaboratorAvailable: () -> Boolean = { false },
+    dcRunner: webrtc.datachannel.DcSuiteRunner? = null,
+    browserRunner: webrtc.datachannel.BrowserRunner? = null,
+    dcResults: webrtc.datachannel.DcResultStore? = null,
     onConfigSaved: () -> Unit
 ) : JPanel(BorderLayout()) {
 
@@ -68,7 +71,8 @@ class SuiteTab(
                 count
             },
             automaticInvites = { continueRun, emit -> authzPanel.runInvites(continueRun, emit) },
-            automaticArtifacts = { continueRun, emit -> authzPanel.runArtifacts(continueRun, emit) })
+            automaticArtifacts = { continueRun, emit -> authzPanel.runArtifacts(continueRun, emit) },
+            dataChannelRunner = dcRunner)
         val navList = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); putClientProperty("webrtc.role", "canvas") }
         fun group(title: String) {
             navList.add(Box.createVerticalStrut(16))
@@ -114,6 +118,10 @@ class SuiteTab(
         screen("mutation", "SDP rules", "Apply saved rules to descriptions in the live page and compare the original and changed SDP.") { SdpMutationPanel(configStore, telemetry) }
         screen("sdp", "SDP fuzzing", "Try bounded malformed descriptions on throwaway peer connections in the selected page.") { SdpFuzzPanel(configStore, activeTests, telemetry) }
         screen("data", "Data channels", "Send bounded test payloads through a live data channel and inspect the results.") { DataChannelFuzzPanel(configStore, activeTests, telemetry) }
+        if (dcRunner != null && browserRunner != null && dcResults != null)
+            screen("dcrunner", "Data channel runner", "Run paired-session DataChannel tests: discovery, Colibri message fuzzing, size boundaries, authorization, replay, load and transport comparison, verified at the recipients.") {
+                DataChannelRunnerPanel(configStore, activeTests, dcRunner, browserRunner, dcResults, telemetry)
+            }
         screen("ice", "STUN & TURN", "Gather ICE candidates in the selected page using a specific server or host candidates only.") { IceProbePanel(configStore, activeTests, telemetry) }
         screen("loop", "Negotiation loop", "Run a bounded offer / answer loop on local throwaway peer connections.") { SignalingFloodPanel(configStore, activeTests, telemetry) }
         group("Tools")

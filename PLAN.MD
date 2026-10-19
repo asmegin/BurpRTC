@@ -1,6 +1,9 @@
 # PLAN.MD — WebRTC Test Suite coverage expansion
 
-**Current build: 1.2.0 (2026-10-13).** Extension and agent are aligned at 1.2.0.
+**Current build: 1.3.0 (2026-10-19).** Extension and agent are aligned at 1.3.0. 1.3.0 adds the
+DataChannel runner (DCH-01/02/03, see DOCS.md); T11 is covered by it. The tier history below is unchanged.
+
+Previous build notes: extension and agent were aligned at 1.2.0.
 STUN/TURN tests, HTTP/WebSocket scenarios and the default TLS engine run on the JVM
 inside Burp; Python is only needed for the optional SSLyze engine. 1.2.0 adds the
 video banking work (session roles and verdicts, meeting links, documents and
