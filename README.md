@@ -8,7 +8,7 @@ in — every engagement detail is configuration, persisted in the Burp project f
 > ICE probing, replay) is gated on Burp **Target scope**, the host allow-list and
 > the agent switch. Credentials are never masked.
 
-**Version 1.3.0** · JDK 21 · Burp Montoya API 2026.7 · self-contained (no Python needed)
+**Version 1.3.1** · JDK 21 · Burp Montoya API 2026.7 · self-contained (no Python needed)
 
 ## What it does
 
@@ -44,6 +44,9 @@ replay HTTP(S) and WebSocket signaling:
     INCONCLUSIVE / BLOCKED / NOT APPLICABLE, and mapped in a coverage report.
   - An integrated browser runner launches the customer, advisor and test-room
     sessions and drives the app's call controls.
+  - Message fuzzing uses automatic payloads by default; you can add your own
+    payload list or file, or use only your own.
+  - FAIL results become specific entries in Burp's Issues list.
   - Native SCTP packet fuzzing needs a separate test peer.
 - **Security checks** — built-in STUN/TURN tests (credential matrix, real relay
   forwarding via a second allocation, channel paths, refresh/release) and saved
@@ -73,12 +76,12 @@ Output: `build/libs/webrtc-testsuite-all.jar`.
 ## Load in Burp
 
 1. Extensions → Installed → Add → extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.3.0 loaded`; a **WebRTC** tab appears.
+2. Output shows `WebRTC Test Suite v1.3.1 loaded`; a **WebRTC** tab appears.
 3. In **Setup**: enable agent injection and add the app host(s) to the allow-list.
 4. Add the target to Burp **Target scope**, browse the app through Burp and join a
    call. In **Scan All**, pick a preset (or a subset of scans) and click
    **Scan selected**. Reload browser pages after updating the extension so they
-   pick up agent 1.3.0.
+   pick up agent 1.3.1.
 
 ## Design boundary
 

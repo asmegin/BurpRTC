@@ -93,6 +93,10 @@ class DataChannelRunnerPanel(
     private val rejoinRemoval = JComboBox(arrayOf("denied", "allowed", "unknown"))
     private val bridgeLog = JTextField(30)
     private val protectedMessages = JTextArea(6, 60)
+    private val payloadSources = listOf("automatic", "custom", "both")
+    private val payloadSource = JComboBox(arrayOf("Automatic (recommended)", "My payloads only", "Automatic + my payloads"))
+    private val customPayloads = JTextArea(8, 60)
+    private val payloadFile = JTextField(30)
 
     private val runButton = UiKit.primary(JButton("Run suite"))
     @Volatile private var busy = false
@@ -236,9 +240,25 @@ class DataChannelRunnerPanel(
             "Protected messages (JSON):" to withHelp(JScrollPane(protectedMessages), "Protected messages",
                 "Application commands only some roles may send. The runner sends each from an allowed role (the state probe must change), restores state, then sends it from another role (the state must not change). Needs runner sessions.",
                 "[{\"name\":\"mute participant\",\"template\":\"{\\\"colibriClass\\\":\\\"EndpointMessage\\\",\\\"to\\\":\\\"{to}\\\",\\\"msgPayload\\\":{\\\"type\\\":\\\"mute\\\",\\\"id\\\":\\\"{marker}\\\"}}\",\"allowedRoles\":[\"advisor\"],\"recipientRole\":\"customer\",\"stateProbe\":\"!!document.querySelector('.mic-muted')\",\"restore\":\"click .unmute\"}]"))
+        val browse = UiKit.quiet(JButton("Browse…").apply { addActionListener {
+            val chooser = JFileChooser()
+            if (chooser.showOpenDialog(this@DataChannelRunnerPanel) == JFileChooser.APPROVE_OPTION) payloadFile.text = chooser.selectedFile.absolutePath
+        } })
+        fun syncPayloads() { val custom = payloadSource.selectedIndex > 0; customPayloads.isEnabled = custom; payloadFile.isEnabled = custom; browse.isEnabled = custom }
+        payloadSource.addActionListener { syncPayloads() }
+        syncPayloads()
+        val payloads = UiKit.form(
+            "Payloads:" to withHelp(payloadSource, "Message fuzzing payloads",
+                "Automatic sends cases generated from the messages the app actually uses: one field changed at a time, malformed JSON, Unicode, overflow numbers and so on. My payloads sends only the list below. Automatic + my payloads sends your list first, then the generated cases. Size boundaries, authorization, replay and load are always generated.",
+                "Start with Automatic. Add your own payloads when you have an application-specific idea to try."),
+            "Your payloads (one per line):" to withHelp(JScrollPane(customPayloads), "Your payloads",
+                "One payload per line, each sent once as its own case. Put {marker} anywhere in the text so recipients can report receiving, displaying or failing on it; without {marker} the line is sent byte-for-byte and matched by hash. Start a line with hex: or base64: to send binary. Lines starting with # are comments.",
+                "{\"colibriClass\":\"EndpointMessage\",\"to\":\"\",\"msgPayload\":{\"type\":\"chat\",\"text\":\"<img src=x onerror=alert(1)> {marker}\"}}\n" +
+                    "{\"type\":\"admin\",\"cmd\":\"promote\",\"id\":\"{marker}\"}\nhex:00 ff 7b 7d"),
+            "Payload file:" to JPanel(BorderLayout(6, 0)).apply { add(payloadFile, BorderLayout.CENTER); add(browse, BorderLayout.EAST) })
         val buttons = UiKit.toolbar(UiKit.primary(JButton("Save settings").apply { addActionListener { saveSettings() } }),
             UiKit.quiet(JButton("Restore recommended defaults").apply { addActionListener { store.save(store.config.copy(dataChannelSuite = DcSuiteConfig())); loadSettings(); status.text = "Recommended suite defaults restored" } }))
-        return UiKit.scroll(UiKit.stack(UiKit.section("Families", familyPanel), buttons, UiKit.section("Budgets", budgets),
+        return UiKit.scroll(UiKit.stack(UiKit.section("Families", familyPanel), UiKit.section("Message fuzzing payloads", payloads), buttons, UiKit.section("Budgets", budgets),
             UiKit.disclosure("Load, churn and degradation thresholds", load), UiKit.disclosure("Application expectations", app),
             UiKit.note("Native SCTP / DCEP packet fuzzing is not part of this runner: browser JavaScript cannot craft SCTP chunks, fragmentation, stream resets or DCEP packets. " +
                 "Coverage lists it as a separate DTLS/SCTP test-peer item (registry test DCH-04).")))
@@ -261,6 +281,8 @@ class DataChannelRunnerPanel(
         seed.text = s.seed.toString(); jitsiVersion.text = s.jitsiVersion; probeTemplate.text = s.probeTemplate; testRoomEndpoint.text = s.testRoomEndpoint
         expectDisconnect.isSelected = s.expectDisconnectOnHangup; rejoinHangup.selectedItem = s.rejoinAfterHangup; rejoinRemoval.selectedItem = s.rejoinAfterRemoval
         bridgeLog.text = s.bridgeLogPath
+        payloadSource.selectedIndex = payloadSources.indexOf(s.payloadSource).coerceAtLeast(0)
+        customPayloads.text = s.customPayloads.joinToString("\n"); payloadFile.text = s.customPayloadFile
         protectedMessages.text = if (s.protectedMessages.isEmpty()) "[]" else pretty.encodeToString(ListSerializer(ProtectedMessage.serializer()), s.protectedMessages)
         val b = store.config.browserRunner
         browserPath.text = b.browserPath; proxy.text = b.proxy; headless.isSelected = b.headless; keepProfiles.isSelected = b.keepProfiles
@@ -279,6 +301,9 @@ class DataChannelRunnerPanel(
         seed = seed.text.trim().toLongOrNull() ?: 0, jitsiVersion = jitsiVersion.text.trim(), probeTemplate = probeTemplate.text.trim(),
         testRoomEndpoint = testRoomEndpoint.text.trim(), expectDisconnectOnHangup = expectDisconnect.isSelected,
         rejoinAfterHangup = rejoinHangup.selectedItem as String, rejoinAfterRemoval = rejoinRemoval.selectedItem as String, bridgeLogPath = bridgeLog.text.trim(),
+        payloadSource = payloadSources[payloadSource.selectedIndex],
+        customPayloads = customPayloads.text.lines().filter { it.isNotBlank() && !it.startsWith("#") },
+        customPayloadFile = payloadFile.text.trim(),
         protectedMessages = protectedMessages.text.trim().ifBlank { "[]" }.let { Json.decodeFromString(ListSerializer(ProtectedMessage.serializer()), it) })
 
     private fun saveSettings() = runCatching {

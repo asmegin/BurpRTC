@@ -194,7 +194,9 @@ data class DcCaseResult(
     val probe: String = "",
     val recovery: String = "",
     val bridgeLog: List<String> = emptyList(),
-    val evidence: JsonObject? = null
+    val evidence: JsonObject? = null,
+    /** The sender page URL; Burp issues for this case are filed against its site. */
+    val senderFrame: String = ""
 )
 
 @Serializable

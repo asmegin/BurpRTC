@@ -289,7 +289,7 @@ class DcSuiteRunner(
             senderEndpoint = rs.sender.endpoint, target = "${rs.target.transport} ${rs.target.id}", queuedAt = rs.started, stage = "runner", evidence = evidence)
 
     private fun publish(rs: RunState, results: List<DcCaseResult>, emit: (String) -> Unit) {
-        results.forEach { r -> rs.results += r; store.record(r); emit("${r.verdict.label.padEnd(14)} ${r.caseId}  ${r.title} — ${r.reasons.firstOrNull().orEmpty()}") }
+        results.map { it.copy(senderFrame = it.senderFrame.ifBlank { rs.sender.frame }) }.forEach { r -> rs.results += r; store.record(r); emit("${r.verdict.label.padEnd(14)} ${r.caseId}  ${r.title} — ${r.reasons.firstOrNull().orEmpty()}") }
     }
 
     private fun probeDelivered(rs: RunState, probe: DcCase, sent: JsonObject?): Boolean? {
@@ -450,7 +450,7 @@ class DcSuiteRunner(
 
         discovery(rs, emit)
         val generated = linkedMapOf<DcScope, List<DcCase>>()
-        if (DcScope.FUZZ in families) generated[DcScope.FUZZ] = gen.fuzzCases(ctx)
+        if (DcScope.FUZZ in families) generated[DcScope.FUZZ] = fuzzPayloads(rs, emit)
         if (DcScope.BINARY in families) generated[DcScope.BINARY] = gen.binaryCases(ctx)
         if (DcScope.AUTHZ in families) generated[DcScope.AUTHZ] = gen.authzCases(ctx)
         if (DcScope.REPLAY in families) generated[DcScope.REPLAY] = gen.replayCases(ctx)
@@ -473,6 +473,18 @@ class DcSuiteRunner(
         }
         pullLog(rs)
         return finish(rs, rs.stopReason)
+    }
+
+    /** Automatic, custom, or both; custom cases come first so the case budget keeps them. */
+    private fun fuzzPayloads(rs: RunState, emit: (String) -> Unit): List<DcCase> {
+        val automatic = if (rs.cfg.payloadSource != "custom") rs.gen.fuzzCases(rs.ctx) else emptyList()
+        if (rs.cfg.payloadSource == "automatic") return automatic
+        val entries = rs.cfg.customPayloads + runCatching { rs.cfg.customPayloadFile.takeIf { it.isNotBlank() }?.let(CustomPayloads::fromFile).orEmpty() }
+            .getOrElse { rs.notes += "Payload file not used: ${it.message}"; emit("Payload file not used: ${it.message}"); emptyList() }
+        val (parsed, problems) = CustomPayloads.parse(entries, rs.cfg.maxMessageBytes, Markers::next)
+        problems.forEach { rs.notes += it; emit(it) }
+        emit("Message fuzzing: ${parsed.size} of your payload(s)" + if (automatic.isNotEmpty()) " + ${automatic.size} automatic case(s)" else "")
+        return rs.gen.customCases(parsed) + automatic
     }
 
     private fun pullLog(rs: RunState) {

@@ -13,11 +13,11 @@ configuration (Module 0), persisted in the Burp project file.
 
 ## Current status (2026-10-19)
 
-**Version 1.3.0.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.3.0** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
+**Version 1.3.1.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
+**1.3.1** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
 scenarios, the default TLS engine and the new DataChannel runner run on the JVM
 inside Burp; Python is needed only if you choose the SSLyze engine.
-Validated: **203 JVM tests passed**, with two opt-in tests skipped by default (the
+Validated: **208 JVM tests passed**, with two opt-in tests skipped by default (the
 SSLyze integration test and the live browser-runner test), and **55 agent tests**
 passed. The DataChannel runner is tested end to end against simulated pages and a
 simulated bridge.
@@ -32,6 +32,51 @@ Real-browser checks (Microsoft Edge / Chromium):
   evaluate and close.
 
 The runner has not yet been exercised against a live Jitsi / LiveBank deployment.
+
+### 1.3.1 — custom fuzz payloads and DataChannel Burp issues
+
+**Payload choice for message fuzzing.** Set it in *Suite settings → Message fuzzing
+payloads*:
+
+- **Automatic** (default): the generated cases described under 1.3.0.
+- **My payloads only.**
+- **Automatic + my payloads.** Your payloads run first, so the case budget keeps them.
+
+How your payloads work:
+
+- Enter one payload per line, or choose a file (one per line; `#` starts a comment).
+- Each payload is sent once as its own case, with the same recipient observation,
+  delivery probes and classification as automatic cases.
+- Put `{marker}` anywhere in a payload so recipients can report receiving,
+  rendering or failing on it. A payload without `{marker}` is sent byte-for-byte and
+  matched by hash.
+- `hex:` and `base64:` lines send binary (ArrayBuffer) payloads.
+- Your payloads are judged as *tolerate*: a case fails on a recipient error
+  carrying its marker, a spoofed identity or lost session health.
+- Size boundaries, authorization, replay and load cases are always generated.
+
+**Burp issues for runner failures.** Each FAIL now becomes a specific,
+deduplicated issue (one per failure kind and site), filed against the sender
+page's site:
+
+- Colibri WebSocket admits tampered or stale credentials
+- Spoofable sender identity in DataChannel messages
+- Client can inject server-to-client bridge messages
+- Role-restricted application command accepted from an unauthorized role
+- DataChannel message delivered to an unauthorized participant
+- Call access not revoked on leave, removal or hang-up
+- Re-join after the call ended or after removal
+- Single message disrupts the call
+- Malformed message causes errors in the receiving client
+- Bridge relays malformed or unexpected messages
+- Degradation under bounded load
+- No recovery after a transport interruption
+
+Each issue carries the case, reasons, recipient observations and payload. Results
+also record the sender page URL. Before 1.3.1, the registry roll-up raised only one
+generic "security check failed" issue.
+
+Native SCTP / DCEP packet fuzzing is still not included (DCH-04).
 
 ### 1.3.0 — DataChannel test runner with paired-session observation
 

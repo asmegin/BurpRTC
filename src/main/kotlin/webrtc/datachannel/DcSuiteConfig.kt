@@ -36,6 +36,12 @@ data class DcSuiteConfig(
     /** Optional endpoint ID of a participant in the separate test room, when it cannot be detected. */
     val testRoomEndpoint: String = "",
     val protectedMessages: List<ProtectedMessage> = emptyList(),
+    /** Message-fuzzing payloads: "automatic" (generated), "custom" (yours only) or "both" (yours first). */
+    val payloadSource: String = "automatic",
+    /** Your payloads, one per entry. See [CustomPayloads] for {marker}, hex: and base64: forms. */
+    val customPayloads: List<String> = emptyList(),
+    /** Optional file with one payload per line, read when the run starts. */
+    val customPayloadFile: String = "",
     val expectDisconnectOnHangup: Boolean = true,
     /** "denied", "allowed" or "unknown": what a customer re-join after the advisor ends the call should do. */
     val rejoinAfterHangup: String = "denied",
@@ -61,11 +67,67 @@ data class DcSuiteConfig(
         require(minDeliveryRatio in 0.0..1.0 && maxP95LatencyMs in 50..60000 && maxPacketLossIncreasePct in 0.0..100.0) { "Invalid degradation thresholds" }
         require(probeTemplate.isBlank() || probeTemplate.contains("{marker}")) { "The probe template must contain {marker}" }
         require(rejoinAfterHangup in EXPECTATIONS && rejoinAfterRemoval in EXPECTATIONS) { "Re-join expectations are denied, allowed or unknown" }
+        require(payloadSource in PAYLOAD_SOURCES) { "Payload source is automatic, custom or both" }
+        require(payloadSource == "automatic" || customPayloads.isNotEmpty() || customPayloadFile.isNotBlank()) {
+            "Add your payloads or choose a payload file, or use automatic payloads"
+        }
+        require(customPayloads.size <= CustomPayloads.MAX) { "Use up to ${CustomPayloads.MAX} custom payloads" }
         require(protectedMessages.size <= 20) { "Use up to 20 protected messages" }
         protectedMessages.forEach(ProtectedMessage::validate)
     }
 
-    companion object { val EXPECTATIONS = setOf("denied", "allowed", "unknown") }
+    companion object {
+        val EXPECTATIONS = setOf("denied", "allowed", "unknown")
+        val PAYLOAD_SOURCES = setOf("automatic", "custom", "both")
+    }
+}
+
+/**
+ * Tester-supplied fuzz payloads. Each entry is sent once as its own case:
+ *  - text containing {marker} gets a fresh case marker, so recipients can report it;
+ *  - text without {marker} is sent byte-for-byte and matched at recipients by hash;
+ *  - "hex:0a ff 00" and "base64:AAEC" send binary (ArrayBuffer) payloads.
+ * In a file, lines starting with # are comments and blank lines are skipped.
+ */
+object CustomPayloads {
+    const val MAX = 500
+
+    data class Entry(val index: Int, val raw: String, val spec: PayloadSpec, val marker: String)
+
+    fun fromFile(path: String): List<String> {
+        val file = java.io.File(path)
+        require(file.isFile) { "Payload file not found: $path" }
+        require(file.length() <= 16L * 1048576) { "Payload file exceeds 16 MiB" }
+        return file.readLines(Charsets.UTF_8).filter { it.isNotBlank() && !it.startsWith("#") }
+    }
+
+    /** Parse entries; [marker] supplies a fresh marker for each {marker} entry. */
+    fun parse(entries: List<String>, maxBytes: Int, marker: () -> String): Pair<List<Entry>, List<String>> {
+        val problems = mutableListOf<String>()
+        val out = entries.take(MAX).mapIndexedNotNull { i, raw ->
+            val spec = runCatching {
+                when {
+                    raw.startsWith("hex:", true) -> {
+                        val hex = raw.substring(4).replace(Regex("\\s"), "")
+                        require(hex.length % 2 == 0 && hex.matches(Regex("[0-9a-fA-F]*"))) { "invalid hex" }
+                        PayloadSpec("arraybuffer", listOf(PayloadPart(base64 = java.util.Base64.getEncoder().encodeToString(hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()))))
+                    }
+                    raw.startsWith("base64:", true) -> {
+                        val value = raw.substring(7).trim()
+                        java.util.Base64.getDecoder().decode(value)
+                        PayloadSpec("arraybuffer", listOf(PayloadPart(base64 = value)))
+                    }
+                    else -> PayloadSpec.text(raw)
+                }
+            }.getOrElse { problems += "Payload ${i + 1}: ${it.message}"; return@mapIndexedNotNull null }
+            val m = if (!spec.binary && raw.contains("{marker}")) marker() else ""
+            val final = if (m.isNotEmpty()) PayloadSpec.text(raw.replace("{marker}", m)) else spec
+            if (final.byteLength() > maxBytes) { problems += "Payload ${i + 1}: ${final.byteLength()} bytes exceeds the $maxBytes-byte cap"; return@mapIndexedNotNull null }
+            Entry(i + 1, raw, final, m)
+        }
+        if (entries.size > MAX) problems += "Only the first $MAX payloads are used"
+        return out to problems
+    }
 }
 
 /**

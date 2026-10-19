@@ -133,6 +133,22 @@ class IssueReporter(private val sink: (Spec) -> Unit, private val config: Config
                     scopeUrl(outcome.str("target").orEmpty()) ?: event.frame, severity(outcome.str("severity")), AuditIssueConfidence.FIRM,
                     "Recorded by the extension's built-in protocol or scenario runner with a passing positive control."))
             }
+            "dc-case-result" -> {
+                val element = o?.get("result") ?: return
+                val result = runCatching { json.decodeFromJsonElement(webrtc.datachannel.DcCaseResult.serializer(), element) }.getOrNull() ?: return
+                val issue = webrtc.datachannel.DcIssues.classify(result) ?: return
+                val origin = webrtc.bridge.BridgeSessions.originOf(result.senderFrame)
+                val receipts = result.receipts.take(5).joinToString("\n") { "  - ${it.participant} (${it.kind}${if (it.from.isNotBlank()) ", from=${it.from}" else ""})" }
+                // One issue per failure category and site; the detail names the first failing case.
+                report(Spec("dc|${issue.category}|$origin", issue.name,
+                    "Case ${result.caseId}: ${result.title}\nTransport: ${result.transport}; sender ${result.sender} (endpoint ${result.senderEndpoint.ifBlank { "unknown" }})\n" +
+                        "Result: ${result.reasons.joinToString("; ")}\n" + (if (receipts.isNotBlank()) "Recipient observations:\n$receipts\n" else "") +
+                        "Payload: ${result.payload.take(2000)}\nRun ${result.runId}; see Tests → Data channel runner for the full evidence and other failing cases.",
+                    issue.remediation, result.senderFrame.ifBlank { event.frame },
+                    when (issue.severity) { "high" -> AuditIssueSeverity.HIGH; "medium" -> AuditIssueSeverity.MEDIUM; "low" -> AuditIssueSeverity.LOW; else -> AuditIssueSeverity.INFORMATION },
+                    when (issue.confidence) { "certain" -> AuditIssueConfidence.CERTAIN; "firm" -> AuditIssueConfidence.FIRM; else -> AuditIssueConfidence.TENTATIVE },
+                    issue.background))
+            }
             "tls-scan-result" -> {
                 val result = o?.get("result") as? JsonObject
                 val target = o.str("scopeUrl") ?: return

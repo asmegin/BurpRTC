@@ -133,6 +133,18 @@ class DcSuiteRunnerTest {
         assertEquals("agent-a", unknown.receipts.single().agentId)
     }
 
+    @Test fun `custom payload source sends only your payloads as fuzz cases`() {
+        store.save(store.config.copy(dataChannelSuite = DcSuiteConfig(families = setOf("fuzz"), payloadSource = "custom", receiptGraceMs = 50,
+            customPayloads = listOf("""{"colibriClass":"EndpointMessage","to":"","msgPayload":{"m":"{marker}"}}""", """{"colibriClass":"Nope","m":"{marker}"}"""))))
+        agentLoop("agent-c"); agentLoop("agent-a")
+        Thread.sleep(200)
+        val run = runner().run(DcSuiteRunner.Options(assignments = mapOf("agent-c" to ("customer" to "main"), "agent-a" to ("advisor" to "main"))))!!
+        val fuzz = run.results.filter { it.scope == "fuzz" }
+        assertEquals(listOf("custom-1", "custom-2"), fuzz.map { it.mutation })
+        assertEquals(Verdict.PASS, fuzz[0].verdict); assertEquals("agent-a", fuzz[0].receipts.single().agentId)
+        assertEquals(Verdict.PASS, fuzz[1].verdict); assertTrue(fuzz[1].receipts.isEmpty())
+    }
+
     @Test fun `no open channel blocks every selected family`() {
         store.save(store.config.copy(dataChannelSuite = DcSuiteConfig(families = setOf("fuzz", "load"))))
         val run = runner().run()!!

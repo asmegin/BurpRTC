@@ -44,7 +44,7 @@ class DcResultStore(
             put("result", json.encodeToJsonElement(DcCaseResult.serializer(), result))
         }
         telemetry.add(TelemetryEvent(telemetry.nextSeq(), LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss.SSS")), "dc-case-result",
-            result.target.ifBlank { "runner" }, "", false, detail, raw.toString()))
+            result.senderFrame.ifBlank { "runner" }, "", false, detail, raw.toString()))
     }
 
     fun note(detail: String, extra: JsonObject = JsonObject(emptyMap())) {

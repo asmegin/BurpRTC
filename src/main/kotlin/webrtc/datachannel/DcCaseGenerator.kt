@@ -224,6 +224,16 @@ class DcCaseGenerator(private val config: DcSuiteConfig, val seed: Long, private
         }
     }
 
+    /**
+     * Tester payloads, one case each. Delivery is allowed (TOLERATE): a case fails on a
+     * recipient error carrying its marker, a spoofed identity, or lost session health.
+     */
+    fun customCases(entries: List<CustomPayloads.Entry>, target: DcTarget? = null): List<DcCase> = entries.map { e ->
+        DcCase(id("custom"), DcScope.FUZZ, "Custom payload ${e.index}: ${e.raw.take(60)}${if (e.raw.length > 60) "…" else ""}", e.spec, e.marker,
+            Expect.TOLERATE, ColibriSchemas.colibriClass(e.raw).orEmpty(), "custom-${e.index}", target = target,
+            notes = listOf("Your payload ${e.index}" + if (e.marker.isEmpty()) "; sent byte-for-byte without a marker, so recipients are matched by hash while observing" else ""))
+    }
+
     // ---- binary and size boundaries ----
 
     fun binaryCases(ctx: DcContext, target: DcTarget = ctx.target): List<DcCase> {
