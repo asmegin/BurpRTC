@@ -4,8 +4,8 @@ plugins {
     id("com.gradleup.shadow") version "8.3.5"
 }
 
-group = "webrtc.testsuite"
-version = "1.3.1"
+group = "burprtc"
+version = "1.3.2"
 
 repositories {
     mavenCentral()
@@ -43,20 +43,20 @@ tasks.processResources {
 tasks.jar {
     manifest {
         attributes(
-            "Implementation-Title" to "WebRTC Test Suite",
+            "Implementation-Title" to "BurpRTC",
             "Implementation-Version" to project.version.toString()
         )
     }
 }
 
 tasks.shadowJar {
-    archiveBaseName.set("webrtc-testsuite")
+    archiveBaseName.set("burprtc")
     archiveClassifier.set("all")
     archiveVersion.set("")
     mergeServiceFiles()
     manifest {
         attributes(
-            "Implementation-Title" to "WebRTC Test Suite",
+            "Implementation-Title" to "BurpRTC",
             "Implementation-Version" to project.version.toString()
         )
     }

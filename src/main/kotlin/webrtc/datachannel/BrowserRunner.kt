@@ -126,6 +126,7 @@ class BrowserRunner(
         val args = mutableListOf(exe.absolutePath, "--user-data-dir=$profile", "--remote-debugging-port=0", "--proxy-server=http://${proxy()}",
             // A fresh profile does not trust Burp's CA; this browser is only used for the controlled sessions.
             "--ignore-certificate-errors", "--no-first-run", "--no-default-browser-check", "--disable-default-apps",
+            "--disable-background-networking", "--disable-component-update",
             "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required",
             // Several call windows run at once; background throttling would slow the agents' polls and timers.
             "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows",

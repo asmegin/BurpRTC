@@ -33,11 +33,6 @@ object Detectors {
 
     // ---- transport / crypto analysis -----------------------------------
 
-    private val rtpmapRegex = Regex("""(?im)^a=rtpmap:\d+\s+([A-Za-z0-9._-]+)/(\d+)""")
-    private val sdesRegex = Regex("""(?im)^a=crypto:""")
-    private val fingerprintRegex = Regex("""(?im)^a=fingerprint:""")
-    private val mediaRegex = Regex("""(?im)^m=""")
-
     /**
      * Judges a captured DTLS/SRTP/TLS transport string of the form
      * "dtls=<cipher> srtp=<profile> tls=<version>" and returns plain-English
@@ -191,7 +186,6 @@ object Detectors {
 
     private val rtpmapFullRegex = Regex("""(?im)^a=rtpmap:(\d+)\s+([A-Za-z0-9._-]+)/(\d+)(?:/(\d+))?""")
     private val fmtpRegex = Regex("""(?im)^a=fmtp:(\d+)\s+(.+)$""")
-    private val fingerprintHashRegex = Regex("""(?im)^a=fingerprint:(\S+)""")
     private val iceLiteRegex = Regex("""(?im)^a=ice-lite""")
     private val setupValueRegex = Regex("""(?im)^a=setup:(\S+)""")
 
@@ -224,15 +218,6 @@ object Detectors {
     /** Media sections (audio/video) that do not declare `a=rtcp-mux`. */
     fun mediaSectionsWithoutRtcpMux(sdp: String): Int =
         SdpDocument.parse(sdp).let { doc -> doc.media.count { doc.active(it) && it.rtp && doc.values(it, "rtcp-mux").isEmpty() } }
-
-    private fun mediaSections(sdp: String): List<String> {
-        val sections = mutableListOf<StringBuilder>()
-        sdp.split(Regex("\\r?\\n")).forEach { line ->
-            if (line.startsWith("m=")) sections.add(StringBuilder(line))
-            else if (sections.isNotEmpty()) sections.last().append('\n').append(line)
-        }
-        return sections.map { it.toString() }
-    }
 
     /** One SDP review item; [finding] marks the stronger (weak-fingerprint) signal. */
     data class SdpFinding(val text: String, val finding: Boolean)

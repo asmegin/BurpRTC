@@ -6,7 +6,7 @@ import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider
 import java.awt.Component
 import javax.swing.JMenuItem
 
-/** Right-click -> "WebRTC: Run authz matrix" on any request(s). */
+/** Right-click -> "BurpRTC: Run authz matrix" on any request(s). */
 class AuthzContextMenu(
     private val onRun: (List<HttpRequestResponse>) -> Unit,
     private val onStage: ((List<HttpRequestResponse>) -> Unit)? = null
@@ -15,9 +15,9 @@ class AuthzContextMenu(
     override fun provideMenuItems(event: ContextMenuEvent): List<Component> {
         val selected = collect(event)
         if (selected.isEmpty()) return emptyList()
-        val item = JMenuItem("WebRTC: Run authz matrix (${selected.size})")
+        val item = JMenuItem("BurpRTC: Run authz matrix (${selected.size})")
         item.addActionListener { onRun(selected) }
-        val stage = onStage?.let { callback -> JMenuItem("WebRTC: Send to Access control (${selected.size})").apply {
+        val stage = onStage?.let { callback -> JMenuItem("BurpRTC: Send to Access control (${selected.size})").apply {
             addActionListener { callback(selected) }
         } }
         return listOfNotNull(stage, item)

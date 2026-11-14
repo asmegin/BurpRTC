@@ -100,7 +100,7 @@ class DcSuiteRunner(
     private fun JsonObject.long(key: String) = (this[key] as? JsonPrimitive)?.longOrNull
     private fun JsonObject.array(key: String) = (this[key] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
 
-    fun participants(options: Options = Options()): List<Participant> {
+    fun participants(options: Options = Options(), resolveEndpoints: Boolean = true): List<Participant> {
         val sessions = configStore.config.browserRunner.sessions
         val parts = controller.agents().filter { controller.pageAllowed(it.frame) }.map { agent ->
             val tag = agent.state.str("runnerSession").orEmpty()
@@ -114,7 +114,7 @@ class DcSuiteRunner(
         // Runner sessions can name their endpoint; otherwise infer it from what the others received.
         val withExpr = parts.map { p ->
             val b = browser
-            if (p.endpoint.isNotBlank() || p.session.isBlank() || b == null) p
+            if (!resolveEndpoints || p.endpoint.isNotBlank() || p.session.isBlank() || b == null) p
             else b.endpointFor(p.session).takeIf { it.isNotBlank() }?.let { p.copy(endpoint = it) } ?: p
         }
         val hints = controller.agents().associate { a -> a.id to (a.state["endpointHints"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.toSet() }

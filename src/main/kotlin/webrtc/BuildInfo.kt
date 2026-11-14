@@ -10,7 +10,7 @@ import java.util.Properties
  * startup banner identify the build that is really loaded, not a hard-coded string.
  */
 object BuildInfo {
-    const val NAME = "WebRTC Test Suite"
+    const val NAME = "BurpRTC"
 
     val version: String by lazy { detect() }
 

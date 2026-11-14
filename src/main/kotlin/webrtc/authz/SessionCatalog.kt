@@ -76,7 +76,7 @@ class SessionCatalog(private val config: ConfigStore, private val scope: ScopeGa
     @Synchronized fun byId(id: Long?): CapturedSession? = entries.values.firstOrNull { it.id == id }
     @Synchronized fun clear() { entries.clear(); selected.clear(); changed() }
     @Synchronized fun observe(req: HttpRequest, contentType: String = "", status: Int = 0, source: String = "HTTP"): Long? {
-        if (!allowed(req.url()) || req.bodyToString().length > 262144) return null
+        if (!allowed(req.url()) || (runCatching { req.body()?.length() }.getOrNull() ?: 0) > 262144 || req.bodyToString().length > 262144) return null
         val identity = AuthTokens.capture(req)
         if (!AuthTokens.hasCredentials(identity)) return null
         val origin = AuthTokens.origin(req.url()) ?: return null

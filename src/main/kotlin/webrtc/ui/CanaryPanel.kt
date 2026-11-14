@@ -19,12 +19,18 @@ import javax.swing.table.AbstractTableModel
  * other user views them, an executed canary reports itself from that page.
  */
 class CanaryPanel(
-    private val config: ConfigStore,
     private val registry: CanaryRegistry,
     private val activeTests: ActiveTestController,
     private val telemetry: TelemetryTableModel,
     private val collaboratorAvailable: () -> Boolean
 ) : JPanel(BorderLayout(0, 8)) {
+    constructor(
+        config: ConfigStore,
+        registry: CanaryRegistry,
+        activeTests: ActiveTestController,
+        telemetry: TelemetryTableModel,
+        collaboratorAvailable: () -> Boolean
+    ) : this(registry, activeTests, telemetry, collaboratorAvailable)
     private val context = JTextField("chat message", 24)
     private val purpose = JComboBox(arrayOf("XSS markup", "Callback URL (Collaborator)"))
     private val payloads = DefaultListModel<CanaryPayload>()
@@ -39,13 +45,14 @@ class CanaryPanel(
     private val status = JLabel(" ").apply { putClientProperty("webrtc.role", "muted") }
     private val evidence = SearchableTextPane("Canary evidence", wrap = true)
     private var rows: List<Canary> = registry.all()
+    private var statusMap: Map<String, String> = emptyMap()
     private val model = object : AbstractTableModel() {
         override fun getRowCount() = rows.size
         override fun getColumnCount() = 5
         override fun getColumnName(c: Int) = listOf("Canary", "Placed in", "Type", "Created", "Status")[c]
         override fun getValueAt(r: Int, c: Int): Any = rows[r].let { canary -> when (c) {
             0 -> canary.id; 1 -> canary.context; 2 -> canary.purpose; 3 -> canary.createdAt.take(19).replace('T', ' ')
-            else -> registry.status(canary)
+            else -> statusMap[canary.id] ?: "Waiting"
         } }
     }
     private val table = JTable(model).apply { autoCreateRowSorter = true; setSelectionMode(ListSelectionModel.SINGLE_SELECTION) }
@@ -59,7 +66,14 @@ class CanaryPanel(
         val copyAll = JButton("Copy all").apply { addActionListener { copy(payloads.elements().toList().joinToString("\n") { it.value }); status.text = "Copied ${payloads.size()} payloads" } }
         val send = JButton("Send via data channel").apply { addActionListener { sendViaChannel() } }
         val poll = JButton("Check Collaborator now").apply { addActionListener {
-            Thread({ val n = registry.pollOutOfBand(); SwingUtilities.invokeLater { status.text = "$n new Collaborator interaction(s)"; refresh() } }, "webrtc-canary-poll").apply { isDaemon = true; start() }
+            Thread({
+                try {
+                    val n = registry.pollOutOfBand()
+                    SwingUtilities.invokeLater { status.text = "$n new Collaborator interaction(s)"; refresh() }
+                } catch (t: Throwable) {
+                    UiKit.logError(t)
+                }
+            }, "webrtc-canary-poll").apply { isDaemon = true; start() }
         } }
         val clear = UiKit.quiet(JButton("Forget canaries").apply { addActionListener { registry.clear(); payloads.clear(); refresh() } })
         val top = UiKit.stack(
@@ -98,7 +112,11 @@ class CanaryPanel(
 
     private fun refresh() {
         val selected = table.selectedRow.takeIf { it >= 0 }?.let { rows.getOrNull(table.convertRowIndexToModel(it))?.id }
-        rows = registry.all(); model.fireTableDataChanged()
+        val currentRows = registry.all()
+        val snap = telemetry.snapshot()
+        rows = currentRows
+        statusMap = currentRows.associate { it.id to registry.status(it, snap) }
+        model.fireTableDataChanged()
         rows.indexOfFirst { it.id == selected }.takeIf { it >= 0 }?.let { val view = table.convertRowIndexToView(it); table.setRowSelectionInterval(view, view) }
         val previous = channels.selectedItem
         val options = activeTests.agents().flatMap { agent -> agent.channels.filter { it.state == "open" }.map { "${it.label.ifBlank { it.id }} on ${agent.frame.take(60)} [${agent.id}|${it.id}]" } }

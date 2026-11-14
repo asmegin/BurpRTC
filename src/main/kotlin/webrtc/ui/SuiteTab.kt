@@ -25,7 +25,7 @@ class SuiteTab(
     private val runner: AuthzMatrixRunner,
     activeTests: ActiveTestController,
     tlsRunner: TlsScanRunner,
-    assessments: webrtc.assessment.AssessmentController,
+    private val assessments: webrtc.assessment.AssessmentController,
     requests: RequestCatalog,
     sessions: webrtc.authz.SessionCatalog = webrtc.authz.SessionCatalog(configStore, webrtc.scope.ScopeGate(api)),
     links: webrtc.authz.LinkCatalogs? = null,
@@ -40,6 +40,7 @@ class SuiteTab(
 ) : JPanel(BorderLayout()) {
 
     private val authzPanel = AuthzPanel(api, configStore, sessions, runner, links, linkTester) { issues?.reportAuthz(it) }
+    private val orchestrator: RunAllController
     private val cards = JPanel(CardLayout())
     private val factories = linkedMapOf<String, () -> JComponent>()
     private val screens = linkedMapOf<String, JComponent>()
@@ -48,7 +49,7 @@ class SuiteTab(
         private set
 
     init {
-        val orchestrator = RunAllController(configStore, activeTests, telemetry, tlsRunner, signalingEndpoints = {
+        orchestrator = RunAllController(configStore, activeTests, telemetry, tlsRunner, signalingEndpoints = {
             SignalingMetadata.collectFromProxy(api, configStore.config.hostAllowList)
         }, authzResults = { authzPanel.model.snapshot() }, assessments = assessments,
             automaticAuthz = { continueRun, emit ->
@@ -113,7 +114,7 @@ class SuiteTab(
         screen("tls", "TLS tests", "Check the certificates, protocols, and ciphers of a selected HTTPS, WSS, or TURN TLS listener.") { TlsScanPanel(configStore, telemetry, tlsRunner) }
         screen("access", "Access control", "Capture sessions, set customer / advisor roles, compare access, and test meeting links, documents and recordings.") { authzPanel }
         if (canaries != null) screen("canaries", "XSS canaries", "Place self-reporting canaries in chat, names and file names to prove stored XSS in the advisor or customer view.") {
-            CanaryPanel(configStore, canaries, activeTests, telemetry, collaboratorAvailable)
+            CanaryPanel(canaries, activeTests, telemetry, collaboratorAvailable)
         }
         screen("mutation", "SDP rules", "Apply saved rules to descriptions in the live page and compare the original and changed SDP.") { SdpMutationPanel(configStore, telemetry) }
         screen("sdp", "SDP fuzzing", "Try bounded malformed descriptions on throwaway peer connections in the selected page.") { SdpFuzzPanel(configStore, activeTests, telemetry) }
@@ -138,7 +139,7 @@ class SuiteTab(
             add(JPanel(BorderLayout(0, 3)).apply {
                 putClientProperty("webrtc.role", "canvas")
                 border = BorderFactory.createEmptyBorder(0, 10, 2, 0)
-                add(JLabel("WebRTC").apply { putClientProperty("webrtc.role", "heading") }, BorderLayout.NORTH)
+                add(JLabel("BurpRTC").apply { putClientProperty("webrtc.role", "heading") }, BorderLayout.NORTH)
                 add(JLabel("Testing workspace").apply { putClientProperty("webrtc.role", "muted") }, BorderLayout.SOUTH)
             }, BorderLayout.NORTH)
             add(UiKit.scroll(navList), BorderLayout.CENTER)
@@ -175,16 +176,29 @@ class SuiteTab(
     fun runAuthz(selected: List<HttpRequestResponse>) {
         SwingUtilities.invokeLater { navigate("access") }
         Thread({
-            for (rr in selected) {
-                val identities = authzPanel.selectedIdentities()
-                runCatching { runner.run(rr.request(), identities.ifEmpty { configStore.config.identities }, "Burp selected request", { true }, true) { res -> authzPanel.addResult(res) } }
-                    .onFailure { authzPanel.addResult(webrtc.authz.AuthzResult(rr.request().url(), "ERROR", 0, 0, "", false, false, it.message.orEmpty(), null)) }
+            try {
+                for (rr in selected) {
+                    if (authzPanel.isCancelled()) break
+                    val identities = authzPanel.selectedIdentities()
+                    runCatching { runner.run(rr.request(), identities.ifEmpty { configStore.config.identities }, "Burp selected request", { !authzPanel.isCancelled() }, true) { res -> authzPanel.addResult(res) } }
+                        .onFailure {
+                            UiKit.logError(it)
+                            authzPanel.addResult(webrtc.authz.AuthzResult(rr.request().url(), "ERROR", 0, 0, "", false, false, it.message.orEmpty(), null))
+                        }
+                }
+            } catch (t: Throwable) {
+                UiKit.logError(t)
             }
-        }, "webrtc-authz-runner").start()
+        }, "webrtc-authz-runner").apply { isDaemon = true; start() }
     }
 
     fun stageAuthz(selected: List<HttpRequestResponse>) {
         SwingUtilities.invokeLater { authzPanel.stage(selected); navigate("access") }
     }
     fun stopAuthz() = authzPanel.stopComparison()
+    fun close() {
+        orchestrator.requestStop()
+        assessments.stop()
+        authzPanel.stopComparison()
+    }
 }

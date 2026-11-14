@@ -28,6 +28,7 @@ class DataChannelRunnerPanel(
     telemetry: TelemetryTableModel
 ) : JPanel(BorderLayout()) {
     private val pretty = Json { prettyPrint = true; encodeDefaults = true }
+    private val parser = Json { ignoreUnknownKeys = true }
     private val status = JLabel("Launch sessions or open the call in two browsers routed through Burp, then run the suite.").apply { putClientProperty("webrtc.role", "muted") }
     private val log = JTextArea(10, 80).apply { isEditable = false; lineWrap = true; wrapStyleWord = true }
 
@@ -113,7 +114,7 @@ class DataChannelRunnerPanel(
         add(JPanel(BorderLayout()).apply { status.preferredSize = Dimension(0, 30); add(status) }, BorderLayout.SOUTH)
         telemetry.onEvent { event ->
             if (event.type != "dc-case-result") return@onEvent
-            val result = runCatching { Json.parseToJsonElement(event.raw).jsonObject["result"]?.let { Json { ignoreUnknownKeys = true }.decodeFromJsonElement(DcCaseResult.serializer(), it) } }.getOrNull()
+            val result = runCatching { parser.parseToJsonElement(event.raw).jsonObject["result"]?.let { parser.decodeFromJsonElement(DcCaseResult.serializer(), it) } }.getOrNull()
                 ?: return@onEvent
             SwingUtilities.invokeLater { addResult(result) }
         }
@@ -128,8 +129,14 @@ class DataChannelRunnerPanel(
         runButton.addActionListener { runSuite() }
         val toolbar = UiKit.toolbar(
             UiKit.quiet(JButton("Check setup").apply { addActionListener { checkSetup() } }),
-            JButton("Launch sessions").apply { addActionListener { background("Launching sessions") { launchAll() } } },
-            JButton("Join calls").apply { addActionListener { background("Joining calls") { joinAll() } } },
+            JButton("Launch sessions").apply { addActionListener {
+                runCatching { saveSessionsQuiet() }.onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this@DataChannelRunnerPanel), it.message, "Sessions not saved", JOptionPane.ERROR_MESSAGE); return@addActionListener }
+                background("Launching sessions") { launchAll() }
+            } },
+            JButton("Join calls").apply { addActionListener {
+                runCatching { saveSessionsQuiet() }.onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this@DataChannelRunnerPanel), it.message, "Sessions not saved", JOptionPane.ERROR_MESSAGE); return@addActionListener }
+                background("Joining calls") { joinAll() }
+            } },
             runButton,
             JButton("Stop").apply { addActionListener { runner.stop(); controller.cancelAll(); status.text = "Stop requested" } },
             UiKit.quiet(JButton("Close sessions").apply { addActionListener { background("Closing sessions") { browser.closeAll() } } }),
@@ -199,7 +206,12 @@ class DataChannelRunnerPanel(
             UiKit.quiet(JButton("Remove session").apply { addActionListener { removeSession() } }),
             UiKit.quiet(JButton("Insert advisor / customer / test-room example").apply { addActionListener { insertExample() } }),
             UiKit.primary(JButton("Save sessions").apply { addActionListener { saveSessions() } }),
-            JButton("Launch selected").apply { addActionListener { selectedSessionName()?.let { name -> background("Launching $name") { saveSessionsQuiet(); browser.launch(store.config.browserRunner.sessions.first { it.name == name }) } } } },
+            JButton("Launch selected").apply { addActionListener {
+                val name = selectedSessionName() ?: return@addActionListener
+                runCatching { saveSessionsQuiet() }.onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this@DataChannelRunnerPanel), it.message, "Sessions not saved", JOptionPane.ERROR_MESSAGE); return@addActionListener }
+                val session = store.config.browserRunner.sessions.firstOrNull { it.name == name } ?: return@addActionListener
+                background("Launching $name") { browser.launch(session) }
+            } },
             JButton("Run Join on selected").apply { addActionListener { selectedSessionName()?.let { name -> background("Joining $name") { browser.runSteps(name, "join") } } } })
         return UiKit.scroll(UiKit.stack(UiKit.section("Browser", global), buttons,
             JScrollPane(sessionTable).apply { preferredSize = Dimension(800, 150) },
@@ -242,7 +254,7 @@ class DataChannelRunnerPanel(
                 "[{\"name\":\"mute participant\",\"template\":\"{\\\"colibriClass\\\":\\\"EndpointMessage\\\",\\\"to\\\":\\\"{to}\\\",\\\"msgPayload\\\":{\\\"type\\\":\\\"mute\\\",\\\"id\\\":\\\"{marker}\\\"}}\",\"allowedRoles\":[\"advisor\"],\"recipientRole\":\"customer\",\"stateProbe\":\"!!document.querySelector('.mic-muted')\",\"restore\":\"click .unmute\"}]"))
         val browse = UiKit.quiet(JButton("Browse…").apply { addActionListener {
             val chooser = JFileChooser()
-            if (chooser.showOpenDialog(this@DataChannelRunnerPanel) == JFileChooser.APPROVE_OPTION) payloadFile.text = chooser.selectedFile.absolutePath
+            if (chooser.showOpenDialog(UiKit.parentWindow(this@DataChannelRunnerPanel)) == JFileChooser.APPROVE_OPTION) payloadFile.text = chooser.selectedFile.absolutePath
         } })
         fun syncPayloads() { val custom = payloadSource.selectedIndex > 0; customPayloads.isEnabled = custom; payloadFile.isEnabled = custom; browse.isEnabled = custom }
         payloadSource.addActionListener { syncPayloads() }
@@ -310,7 +322,7 @@ class DataChannelRunnerPanel(
         val settings = suiteSettings(); settings.validate()
         store.save(store.config.copy(dataChannelSuite = settings))
     }.onSuccess { status.text = "Suite settings saved for manual runs and Scan All" }
-        .onFailure { JOptionPane.showMessageDialog(this, it.message, "Settings not saved", JOptionPane.ERROR_MESSAGE) }
+        .onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this), it.message, "Settings not saved", JOptionPane.ERROR_MESSAGE) }
 
     // ---- sessions ----
 
@@ -355,7 +367,7 @@ class DataChannelRunnerPanel(
 
     private fun saveSessions() = runCatching { saveSessionsQuiet() }
         .onSuccess { status.text = "Sessions saved" }
-        .onFailure { JOptionPane.showMessageDialog(this, it.message, "Sessions not saved", JOptionPane.ERROR_MESSAGE) }
+        .onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this), it.message, "Sessions not saved", JOptionPane.ERROR_MESSAGE) }
 
     private fun insertExample() {
         listOf(
@@ -385,7 +397,7 @@ class DataChannelRunnerPanel(
     private fun refreshParticipants() {
         if (busy || participantTable.isEditing) return
         val previous = assignments()
-        val parts = runner.participants(DcSuiteRunner.Options(assignments = previous))
+        val parts = runner.participants(DcSuiteRunner.Options(assignments = previous), resolveEndpoints = false)
         participantModel.rowCount = 0; participantIds.clear()
         parts.forEach { p ->
             val targets = runner.targets(p.agentId).joinToString(", ") { "${it.transport} ${it.id} (${it.peerKind})" }
@@ -406,15 +418,14 @@ class DataChannelRunnerPanel(
         val problems = mutableListOf<String>()
         runCatching { suiteSettings().validate() }.onFailure { problems += "Suite settings: ${it.message}" }
         problems += browser.check()
-        val parts = runner.participants(DcSuiteRunner.Options(assignments = assignments()))
+        val parts = runner.participants(DcSuiteRunner.Options(assignments = assignments()), resolveEndpoints = false)
         if (parts.none { runner.targets(it.agentId).isNotEmpty() }) problems += "No instrumented page has an open DataChannel or Colibri WebSocket yet (join the call first)."
         if (parts.size < 2) problems += "Only ${parts.size} instrumented page(s): a second participant is needed to observe delivery."
         val text = if (problems.isEmpty()) "Setup looks ready. Browser: ${browser.browser()?.path}; proxy ${browser.proxy()}." else problems.joinToString("\n• ", "• ")
-        JOptionPane.showMessageDialog(this, text, "Data channel runner setup", if (problems.isEmpty()) JOptionPane.INFORMATION_MESSAGE else JOptionPane.WARNING_MESSAGE)
+        JOptionPane.showMessageDialog(UiKit.parentWindow(this), text, "Data channel runner setup", if (problems.isEmpty()) JOptionPane.INFORMATION_MESSAGE else JOptionPane.WARNING_MESSAGE)
     }
 
     private fun launchAll() {
-        saveSessionsQuiet()
         store.config.browserRunner.sessions.forEach { s -> append("Launching ${s.name}…"); runCatching { browser.launch(s) }.onFailure { append("${s.name}: ${it.message}") } }
     }
 
@@ -428,7 +439,7 @@ class DataChannelRunnerPanel(
 
     private fun runSuite() {
         val settings = runCatching { suiteSettings().also { it.validate() } }.getOrElse {
-            JOptionPane.showMessageDialog(this, it.message, "Settings invalid", JOptionPane.ERROR_MESSAGE); return
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), it.message, "Settings invalid", JOptionPane.ERROR_MESSAGE); return
         }
         store.save(store.config.copy(dataChannelSuite = settings))
         val chosen = sender.selectedIndex.takeIf { it > 0 }?.let { participantIds.getOrNull(it - 1) }
@@ -443,18 +454,21 @@ class DataChannelRunnerPanel(
     private fun export() {
         val run = results.latest() ?: run { status.text = "No run to export yet"; return }
         val chooser = JFileChooser().apply { selectedFile = File("datachannel-run-${run.runId.take(8)}.json") }
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
+        if (chooser.showSaveDialog(UiKit.parentWindow(this)) != JFileChooser.APPROVE_OPTION) return
         runCatching { chooser.selectedFile.writeText(results.exportJson(run)) }
             .onSuccess { status.text = "Exported ${run.results.size} result(s) to ${chooser.selectedFile.name}" }
-            .onFailure { JOptionPane.showMessageDialog(this, it.message, "Export failed", JOptionPane.ERROR_MESSAGE) }
+            .onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this), it.message, "Export failed", JOptionPane.ERROR_MESSAGE) }
     }
 
     private fun background(label: String, work: () -> Unit) {
         if (busy) { status.text = "Busy; wait or press Stop"; return }
         busy = true; runButton.isEnabled = false; status.text = "$label…"
         Thread({
-            runCatching(work).onFailure { append("$label failed: ${it.message}") }
-            SwingUtilities.invokeLater { busy = false; runButton.isEnabled = true; if (status.text == "$label…") status.text = "$label: done"; refreshParticipants() }
+            try {
+                runCatching(work).onFailure { UiKit.logError(it); append("$label failed: ${it.message}") }
+            } finally {
+                SwingUtilities.invokeLater { busy = false; runButton.isEnabled = true; if (status.text == "$label…") status.text = "$label: done"; refreshParticipants() }
+            }
         }, "webrtc-dc-runner").apply { isDaemon = true }.start()
     }
 

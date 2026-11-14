@@ -66,7 +66,7 @@ private fun saveSettings(parent: JPanel, status: JLabel, save: () -> Unit) = JBu
     toolTipText = "Save these inputs for manual runs and Scan All."
     addActionListener {
         runCatching(save).onSuccess { status.text = "Settings saved for Scan All and manual runs" }
-            .onFailure { JOptionPane.showMessageDialog(parent, it.message, "Settings not saved", JOptionPane.ERROR_MESSAGE) }
+            .onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(parent), it.message, "Settings not saved", JOptionPane.ERROR_MESSAGE) }
     }
 }
 
@@ -166,7 +166,7 @@ class DataChannelFuzzPanel(
             } catch (e: Exception) {
                 controller.disarmNextOpenFuzz()
                 nextOpen.isSelected = false
-                JOptionPane.showMessageDialog(this, e.message, "DataChannel test", JOptionPane.ERROR_MESSAGE)
+                JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "DataChannel test", JOptionPane.ERROR_MESSAGE)
             }
         }
         add(JSplitPane(JSplitPane.VERTICAL_SPLIT, controls, TestResultsPanel(telemetry, "fuzz-.*|pc-state|sdp-error|dc-(created|state|send|recv)", "dc-fuzz")).apply { resizeWeight = 0.35; dividerLocation = 400 })
@@ -208,7 +208,7 @@ class DataChannelFuzzPanel(
             val id = controller.queueFuzz(selected.agent, selected.channel, cfg)
             currentJob = id
             status.text = "Queued ${id.take(8)}; waiting for browser poll"
-        } catch (e: Exception) { JOptionPane.showMessageDialog(this, e.message, "DataChannel test", JOptionPane.ERROR_MESSAGE) }
+        } catch (e: Exception) { JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "DataChannel test", JOptionPane.ERROR_MESSAGE) }
     }
 }
 
@@ -283,7 +283,7 @@ class SdpFuzzPanel(
             val id = controller.queueSdpFuzz(selected.id, cfg)
             currentJob = id
             status.text = "Queued ${id.take(8)}; waiting for browser poll"
-        } catch (e: Exception) { JOptionPane.showMessageDialog(this, e.message, "SDP fuzz", JOptionPane.ERROR_MESSAGE) }
+        } catch (e: Exception) { JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "SDP fuzz", JOptionPane.ERROR_MESSAGE) }
     }
 }
 
@@ -348,8 +348,8 @@ class IceProbePanel(
                 add(saveSettings(this@IceProbePanel, status) { val cfg = settings(); cfg.validate(); store.save(store.config.copy(iceProbe = cfg)) })
                 add(JButton("Show scope URL").apply { addActionListener {
                     runCatching { url.text.trim().takeIf { it.isNotEmpty() }?.let { IceEndpoint.parse(it).scopeUrl } ?: "No server: host candidates only" }
-                        .onSuccess { JOptionPane.showMessageDialog(this@IceProbePanel, it, "ICE endpoint scope", JOptionPane.INFORMATION_MESSAGE) }
-                        .onFailure { JOptionPane.showMessageDialog(this@IceProbePanel, it.message, "ICE URI", JOptionPane.ERROR_MESSAGE) }
+                        .onSuccess { JOptionPane.showMessageDialog(UiKit.parentWindow(this@IceProbePanel), it, "ICE endpoint scope", JOptionPane.INFORMATION_MESSAGE) }
+                        .onFailure { JOptionPane.showMessageDialog(UiKit.parentWindow(this@IceProbePanel), it.message, "ICE URI", JOptionPane.ERROR_MESSAGE) }
                 } })
             }, BorderLayout.SOUTH)
         }
@@ -381,7 +381,7 @@ class IceProbePanel(
             val id = controller.queueIce(selected.id, cfg)
             currentJob = id
             status.text = "Queued ${id.take(8)}; waiting for browser poll"
-        } catch (e: Exception) { JOptionPane.showMessageDialog(this, e.message, "ICE probe", JOptionPane.ERROR_MESSAGE) }
+        } catch (e: Exception) { JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "ICE probe", JOptionPane.ERROR_MESSAGE) }
     }
 }
 
@@ -459,6 +459,6 @@ class SignalingFloodPanel(
             val id = controller.queueSignalingFlood(selected.id, cfg)
             currentJob = id
             status.text = "Queued ${id.take(8)}; waiting for browser poll"
-        } catch (e: Exception) { JOptionPane.showMessageDialog(this, e.message, "Signaling flood", JOptionPane.ERROR_MESSAGE) }
+        } catch (e: Exception) { JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "Signaling flood", JOptionPane.ERROR_MESSAGE) }
     }
 }

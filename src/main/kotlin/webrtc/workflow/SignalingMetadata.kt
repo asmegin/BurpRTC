@@ -61,7 +61,8 @@ object SignalingMetadata {
     fun collectFromProxy(api: MontoyaApi, hostAllowList: List<String>, limit: Int = 400): List<Endpoint> {
         val observations = runCatching {
             val history = api.proxy().history()
-            history.takeLast(limit).mapNotNull { rr ->
+            val tail = if (history.size > limit) history.subList(history.size - limit, history.size) else history
+            tail.mapNotNull { rr ->
                 val url = runCatching { rr.request().url() }.getOrNull() ?: return@mapNotNull null
                 val host = runCatching { URI(url).host }.getOrNull() ?: return@mapNotNull null
                 if (hostAllowList.isNotEmpty() && !hostAllowList.any { it.equals("all", true) } &&

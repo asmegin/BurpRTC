@@ -11,6 +11,7 @@ import webrtc.scope.ScopeGate
 import webrtc.telemetry.TelemetryTableModel
 import webrtc.ui.AuthzContextMenu
 import webrtc.ui.SuiteTab
+import webrtc.ui.UiKit
 import webrtc.tls.TlsScanRunner
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -18,6 +19,8 @@ import java.util.concurrent.TimeUnit
 class WebRtcExtension : BurpExtension {
     override fun initialize(api: MontoyaApi) {
         api.extension().setName(BuildInfo.NAME)
+        UiKit.suiteFrame = runCatching { api.userInterface().swingUtils().suiteFrame() }.getOrNull()
+        UiKit.errorLogger = { api.logging().logToError(it.stackTraceToString()) }
 
         val configStore = ConfigStore(api)
         val scope = ScopeGate(api)
@@ -62,17 +65,31 @@ class WebRtcExtension : BurpExtension {
         api.userInterface().registerContextMenuItemsProvider(
             AuthzContextMenu(suiteTab::runAuthz, suiteTab::stageAuthz)
         )
-        api.userInterface().registerSuiteTab("WebRTC", suiteTab)
+        api.userInterface().registerSuiteTab("BurpRTC", suiteTab)
 
         // Poll Collaborator only while out-of-band canaries exist.
         val poller = Executors.newSingleThreadScheduledExecutor { Thread(it, "webrtc-collaborator-poll").apply { isDaemon = true } }
         poller.scheduleWithFixedDelay({
-            runCatching { if (canaries.all().any { it.collaborator.isNotBlank() }) canaries.pollOutOfBand() }
+            try {
+                if (canaries.all().any { it.collaborator.isNotBlank() }) canaries.pollOutOfBand()
+            } catch (t: Throwable) {
+                UiKit.logError(t)
+            }
         }, 15, 15, TimeUnit.SECONDS)
 
         bridge.start()
         api.extension().registerUnloadingHandler {
-            poller.shutdownNow(); suiteTab.stopAuthz(); dcRunner.stop(); browserRunner.closeAll(); tlsRunner.close(); protocolRunner.close(); bridge.stop()
+            poller.shutdownNow()
+            UiKit.stopAllTimers()
+            suiteTab.close()
+            assessments.stop()
+            dcRunner.stop()
+            browserRunner.closeAll()
+            tlsRunner.close()
+            protocolRunner.close()
+            bridge.stop()
+            UiKit.suiteFrame = null
+            UiKit.errorLogger = null
         }
 
         api.logging().logToOutput(BuildInfo.loadedMessage())

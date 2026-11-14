@@ -88,9 +88,13 @@ class TlsScanPanel(
         if (runner.isBusy()) { status.text = "Another TLS task is active; stop it or wait"; return }
         actions.forEach { it.isEnabled = false }; status.text = "TLS task running…"; output.text = ""
         Thread({
-            val result = runCatching { action(cfg) }.getOrElse { TlsScanRunner.Outcome("failed", it.message.orEmpty()) }
-            append(result.detail)
-            SwingUtilities.invokeLater { status.text = result.detail; actions.forEach { it.isEnabled = true } }
+            try {
+                val result = runCatching { action(cfg) }.getOrElse { UiKit.logError(it); TlsScanRunner.Outcome("failed", it.message.orEmpty()) }
+                append(result.detail)
+                SwingUtilities.invokeLater { status.text = result.detail }
+            } finally {
+                SwingUtilities.invokeLater { actions.forEach { it.isEnabled = true } }
+            }
         }, "webrtc-tls-runner").apply { isDaemon = true; start() }
     }
 }

@@ -1,21 +1,21 @@
-# WebRTC Test Suite — full reference
+# BurpRTC — full reference
 
-> This is the complete reference. For a short overview and download/build/load
+> This is the complete reference. For a short overview and build/load
 > instructions, see [README.md](README.md).
 
 A client-agnostic Burp extension that drives a WebRTC penetration test from one
-Suite tab. Nothing target-specific is compiled in — every engagement detail is
+Suite tab (**BurpRTC**). Nothing target-specific is compiled in — every engagement detail is
 configuration (Module 0), persisted in the Burp project file.
 
 > Authorized testing only. Every active action (injection, mutation, fuzzing,
 > ICE probing, replay) is gated on Burp **Target scope**. Credentials are preserved
 > in full; captured session candidates are held in memory.
 
-## Current status (2026-10-19)
+## Current status
 
-**Version 1.3.1.** `build/libs/webrtc-testsuite-all.jar` bundles browser agent
-**1.3.1** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
-scenarios, the default TLS engine and the new DataChannel runner run on the JVM
+**Version 1.3.2.** `build/libs/burprtc-all.jar` bundles browser agent
+**1.3.2** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
+scenarios, the default TLS engine and the DataChannel runner run on the JVM
 inside Burp; Python is needed only if you choose the SSLyze engine.
 Validated: **208 JVM tests passed**, with two opt-in tests skipped by default (the
 SSLyze integration test and the live browser-runner test), and **55 agent tests**

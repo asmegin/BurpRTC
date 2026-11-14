@@ -61,13 +61,17 @@ class IssueReporter(private val sink: (Spec) -> Unit, private val config: Config
     data class Spec(val key: String, val name: String, val detail: String, val remediation: String, val baseUrl: String,
                     val severity: AuditIssueSeverity, val confidence: AuditIssueConfidence, val background: String,
                     val evidence: List<HttpRequestResponse> = emptyList())
-    private val reported = java.util.Collections.synchronizedSet(HashSet<String>())
+    private val reported = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
     private val json = Json { ignoreUnknownKeys = true }
 
     fun attach() = telemetry.onEvent { runCatching { onEvent(it) } }
 
     fun report(spec: Spec): Boolean {
-        if (!config.config.burpIssues || !reported.add(spec.key)) return false
+        if (!config.config.burpIssues) return false
+        synchronized(reported) {
+            if (!reported.add(spec.key)) return false
+            while (reported.size > 10_000) reported.remove(reported.first())
+        }
         val baseUrl = httpUrl(spec.baseUrl) ?: return false
         sink(spec.copy(baseUrl = baseUrl))
         val raw = buildJsonObject { put("type", "burp-issue"); put("frame", baseUrl); put("detail", "Burp issue added: ${spec.name}"); put("severity", spec.severity.name); put("key", spec.key) }
@@ -185,7 +189,7 @@ class IssueReporter(private val sink: (Spec) -> Unit, private val config: Config
 
 /** Intruder payload source: one fresh canary per attack, all variants in turn. */
 class CanaryPayloadGeneratorProvider(private val registry: CanaryRegistry) : PayloadGeneratorProvider {
-    override fun displayName() = "WebRTC XSS canaries"
+    override fun displayName() = "BurpRTC XSS canaries"
     override fun providePayloadGenerator(attack: AttackConfiguration): PayloadGenerator {
         val label = "Intruder " + runCatching { attack.httpService().map { it.host() }.orElse("") + " " + attack.requestTemplate().content().toString().lineSequence().first().take(60) }.getOrDefault("")
         val payloads = registry.payloads(registry.create(label))

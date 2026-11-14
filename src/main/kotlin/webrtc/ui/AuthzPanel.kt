@@ -117,7 +117,7 @@ class AuthzPanel(private val api: MontoyaApi, private val config: ConfigStore,
         useStaged.addActionListener { updateStatus() }
         val rename = JButton("Name session").apply { addActionListener {
             val selected = highlightedSession() ?: return@addActionListener
-            JOptionPane.showInputDialog(this@AuthzPanel, "Session name (for example Alice / tenant A):", selected.label)
+            JOptionPane.showInputDialog(UiKit.parentWindow(this@AuthzPanel), "Session name (for example Alice / tenant A):", selected.label)
                 ?.let { sessions.rename(selected.id, it) }
         } }
         val clear = UiKit.quiet(JButton("Clear sessions").apply { addActionListener { sessions.clear(); details.text = ""; swaps.text = "" } })
@@ -178,9 +178,12 @@ class AuthzPanel(private val api: MontoyaApi, private val config: ConfigStore,
         if (running) return
         running = true; cancelled = false; updateStatus(); tabs.selectedIndex = 1
         Thread({
-            runCatching(action).onFailure { addResult(AuthzResult("", "ERROR", 0, 0, "", false, false, "$label: ${it.message}", null)) }
-            running = false
-            SwingUtilities.invokeLater { updateStatus(); status.text = if (cancelled) "Stopped $label" else "Finished $label; inspect verdicts in Results" }
+            try {
+                runCatching(action).onFailure { UiKit.logError(it); addResult(AuthzResult("", "ERROR", 0, 0, "", false, false, "$label: ${it.message}", null)) }
+            } finally {
+                running = false
+                SwingUtilities.invokeLater { updateStatus(); status.text = if (cancelled) "Stopped $label" else "Finished $label; inspect verdicts in Results" }
+            }
         }, "webrtc-$label").apply { isDaemon = true }.start()
     }
     fun selectedIdentities(): List<IdentityProfile> = selectedProfiles
@@ -263,7 +266,8 @@ class AuthzPanel(private val api: MontoyaApi, private val config: ConfigStore,
                     val done = completed
                     SwingUtilities.invokeLater { if (!cancelled) status.text = "Compared $done / ${plans.size} requests" }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                UiKit.logError(e)
                 addResult(AuthzResult("", "ERROR", 0, 0, "", false, false, e.message.orEmpty(), null))
             } finally {
                 running = false
@@ -273,6 +277,7 @@ class AuthzPanel(private val api: MontoyaApi, private val config: ConfigStore,
     }
     private fun sendToRepeater() { selectedResult()?.requestResponse?.request()?.let { api.repeater().sendToRepeater(it) } }
     fun stopComparison() { cancelled = true }
+    fun isCancelled(): Boolean = cancelled
     private fun copy(value: String) { if (value.isNotEmpty()) Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(value), null) }
     private fun Any?.orEmptyText() = this?.toString().orEmpty()
     private fun textArea() = JTextArea().apply { isEditable = false; lineWrap = true; wrapStyleWord = true; border = BorderFactory.createEmptyBorder(8, 10, 8, 10) }

@@ -236,35 +236,35 @@ class ExternalTestsPanel(
     private fun exportGuide() {
         val stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
         val chooser = JFileChooser().apply {
-            selectedFile = File("webrtc-external-tests-$stamp.md")
+            selectedFile = File("burprtc-external-tests-$stamp.md")
             dialogTitle = "Export external tests guide"
         }
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
+        if (chooser.showSaveDialog(UiKit.parentWindow(this)) != JFileChooser.APPROVE_OPTION) return
         try {
             val withEdits = tableModel.rows.map { if (overrides.containsKey(it.id)) it.copy(command = effectiveCommand(it)) else it }
             chooser.selectedFile.writeText(ExternalTools.toMarkdown(withEdits), Charsets.UTF_8)
             status.text = "saved ${chooser.selectedFile.name}"
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, e.message, "Could not export guide", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "Could not export guide", JOptionPane.ERROR_MESSAGE)
         }
     }
 
     private fun exportTurntConfig() {
         val yaml = ExternalTools.turntConfig(values)
         if (yaml == null) {
-            JOptionPane.showMessageDialog(this, "TURNt configuration needs a valid turn:/turns: URL, username and password. Supply the missing values in Config or manual inputs (TURNT_ICE_URL, TURN_USER, TURN_PASSWORD).", "TURNt config", JOptionPane.INFORMATION_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), "TURNt configuration needs a valid turn:/turns: URL, username and password. Supply the missing values in Config or manual inputs (TURNT_ICE_URL, TURN_USER, TURN_PASSWORD).", "TURNt config", JOptionPane.INFORMATION_MESSAGE)
             return
         }
         val chooser = JFileChooser().apply {
             selectedFile = File("turnt-config.yaml")
             dialogTitle = "Export TURNt configuration"
         }
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
+        if (chooser.showSaveDialog(UiKit.parentWindow(this)) != JFileChooser.APPROVE_OPTION) return
         try {
             chooser.selectedFile.writeText(yaml, Charsets.UTF_8)
             status.text = "saved ${chooser.selectedFile.name}"
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, e.message, "Could not export TURNt config", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "Could not export TURNt config", JOptionPane.ERROR_MESSAGE)
         }
     }
 }

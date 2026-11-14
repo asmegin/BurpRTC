@@ -21,6 +21,7 @@ class CdpClient private constructor() : AutoCloseable {
     // Events are dispatched off the socket thread so a listener may issue blocking calls.
     private val events = Executors.newSingleThreadExecutor { Thread(it, "webrtc-cdp-events").apply { isDaemon = true } }
     private val sendLock = Any()
+    private lateinit var httpClient: HttpClient
     private lateinit var socket: WebSocket
     @Volatile var closed = false
         private set
@@ -28,7 +29,9 @@ class CdpClient private constructor() : AutoCloseable {
     companion object {
         fun connect(url: String, timeoutMs: Long = 10000): CdpClient {
             val client = CdpClient()
-            client.socket = HttpClient.newHttpClient().newWebSocketBuilder().connectTimeout(Duration.ofMillis(timeoutMs))
+            val http = HttpClient.newHttpClient()
+            client.httpClient = http
+            client.socket = http.newWebSocketBuilder().connectTimeout(Duration.ofMillis(timeoutMs))
                 .buildAsync(URI(url), client.Listener()).get(timeoutMs, TimeUnit.MILLISECONDS)
             return client
         }
@@ -53,14 +56,15 @@ class CdpClient private constructor() : AutoCloseable {
         val method = (message["method"] as? JsonPrimitive)?.contentOrNull ?: return
         val session = (message["sessionId"] as? JsonPrimitive)?.contentOrNull
         val params = message["params"] as? JsonObject ?: JsonObject(emptyMap())
-        if (!events.isShutdown) events.execute { listeners.forEach { runCatching { it(method, session, params) } } }
+        if (!events.isShutdown) events.execute { listeners.forEach { runCatching { it(method, session, params) }.onFailure(webrtc.ui.UiKit::logError) } }
     }
 
     private fun shutdown() {
         closed = true
         pending.values.forEach { it.completeExceptionally(IllegalStateException("DevTools connection closed")) }
         pending.clear()
-        events.shutdown()
+        events.shutdownNow()
+        if (::httpClient.isInitialized) runCatching { httpClient.close() }
     }
 
     fun onEvent(listener: (method: String, sessionId: String?, params: JsonObject) -> Unit) { listeners += listener }

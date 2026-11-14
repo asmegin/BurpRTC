@@ -32,6 +32,9 @@ class InjectorHandler(
 
     private val metaCspRegex =
         Regex("(?is)<meta[^>]+http-equiv=[\"']?content-security-policy[\"']?[^>]*>")
+    private val bundledAgentJs: String? by lazy {
+        javaClass.getResourceAsStream("/agent/webrtc-agent.js")?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+    }
 
     override fun handleHttpRequestToBeSent(req: HttpRequestToBeSent): RequestToBeSentAction {
         if (sessions != null && !req.toolSource().isFromTool(burp.api.montoya.core.ToolType.EXTENSIONS))
@@ -52,10 +55,12 @@ class InjectorHandler(
                     requests?.observe(req, resp.headerValue("Content-Type").orEmpty(), resp.statusCode().toInt())
             }
         canaries?.let { registry -> runCatching {
-            val url = resp.initiatingRequest().url()
-            val host = java.net.URI(url).host
-            if (host != null && ScopeGate.hostAllowed(host, cfg.hostAllowList) && scope.inScope(url))
-                registry.scan(resp.bodyToString(), url, "HTTP response")
+            if (registry.all().isNotEmpty()) {
+                val url = resp.initiatingRequest().url()
+                val host = java.net.URI(url).host
+                if (host != null && ScopeGate.hostAllowed(host, cfg.hostAllowList) && scope.inScope(url))
+                    registry.scan(resp.bodyToString(), url, "HTTP response")
+            }
         } }
         capture?.let { observer -> runCatching {
             val original = kotlinx.serialization.json.buildJsonArray {
@@ -110,7 +115,7 @@ class InjectorHandler(
 
     private fun buildAgentScript(cfg: WebRtcConfig, frame: String): String? {
         val agentSrc = if (cfg.agentJsPath.isBlank()) {
-            javaClass.getResourceAsStream("/agent/webrtc-agent.js")?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }
+            bundledAgentJs
                 ?: run { api.logging().logToError("[inject] bundled agent missing; rebuild the jar"); return null }
         } else {
             val f = File(cfg.agentJsPath)

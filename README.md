@@ -1,14 +1,14 @@
-# WebRTC Test Suite — Burp Suite extension
+# BurpRTC — WebRTC Security Testing Suite for Burp Suite
 
-A client-agnostic Burp Suite Professional extension that drives a WebRTC
-penetration test from a single Suite tab. Nothing target-specific is compiled
-in — every engagement detail is configuration, persisted in the Burp project file.
+**One-line summary:** Client-agnostic WebRTC security testing suite for Burp Suite that instruments browser calls, audits SDP/ICE/DTLS/SRTP and STUN/TURN infrastructure, tests signaling and DataChannel access control, and reports WebRTC vulnerabilities.
+
+A client-agnostic Burp Suite extension that drives a WebRTC penetration test from a single **BurpRTC** Suite tab. Nothing target-specific is compiled in — every engagement detail is configuration, persisted in the Burp project file.
 
 > **Authorized testing only.** Every active action (injection, mutation, fuzzing,
 > ICE probing, replay) is gated on Burp **Target scope**, the host allow-list and
 > the agent switch. Credentials are never masked.
 
-**Version 1.3.1** · JDK 21 · Burp Montoya API 2026.7 · self-contained (no Python needed)
+**Version 1.3.2** · JDK 21 · Burp Montoya API 2026.7 · self-contained (no Python needed)
 
 ## What it does
 
@@ -58,11 +58,6 @@ replay HTTP(S) and WebSocket signaling:
 - **Video banking preset** — one click selects every scan and shows an
   advisor / customer test checklist.
 
-## Download
-
-Prebuilt extension (bundles the browser agent):
-**[`dist/webrtc-testsuite-all.jar`](dist/webrtc-testsuite-all.jar)**.
-
 ## Build from source
 
 Requires JDK 21 (the Gradle wrapper handles the rest):
@@ -71,17 +66,17 @@ Requires JDK 21 (the Gradle wrapper handles the rest):
 cmd.exe /c ".\gradlew.bat shadowJar --offline --console=plain --no-daemon"
 ```
 
-Output: `build/libs/webrtc-testsuite-all.jar`.
+Output: `build/libs/burprtc-all.jar`.
 
 ## Load in Burp
 
-1. Extensions → Installed → Add → extension type **Java** → select the jar.
-2. Output shows `WebRTC Test Suite v1.3.1 loaded`; a **WebRTC** tab appears.
+1. Extensions → Installed → Add → extension type **Java** → select `build/libs/burprtc-all.jar`.
+2. Output shows `BurpRTC v1.3.2 loaded`; a **BurpRTC** tab appears.
 3. In **Setup**: enable agent injection and add the app host(s) to the allow-list.
 4. Add the target to Burp **Target scope**, browse the app through Burp and join a
    call. In **Scan All**, pick a preset (or a subset of scans) and click
    **Scan selected**. Reload browser pages after updating the extension so they
-   pick up agent 1.3.1.
+   pick up agent 1.3.2.
 
 ## Design boundary
 

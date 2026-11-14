@@ -53,6 +53,6 @@ object HelpUi {
             preferredSize = Dimension(480, 300)
             border = null
         }
-        JOptionPane.showMessageDialog(parent, scroll, title, JOptionPane.INFORMATION_MESSAGE)
+        JOptionPane.showMessageDialog(UiKit.parentWindow(parent), scroll, title, JOptionPane.INFORMATION_MESSAGE)
     }
 }

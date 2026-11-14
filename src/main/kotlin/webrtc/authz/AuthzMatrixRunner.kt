@@ -220,7 +220,9 @@ class AuthzMatrixRunner(
             AuthzResult.LIKELY_VIOLATION -> " Expected $expectation, but the response " + (if (leaked.isNotEmpty()) "contains the baseline owner's values (${leaked.joinToString(", ")})." else "matches the higher-privilege baseline.") + " Likely broken access control; confirm in Repeater."
             else -> if (expectation.isNotEmpty()) " Expected: $expectation." else ""
         }
-        return AuthzResult(url, variant, status, body.length, hash, same, flagged, "$note. $interpretation$verdictText", rr, baseline, expectation, verdict)
+        val storedRr = runCatching { rr.copyToTempFile() ?: rr }.getOrDefault(rr)
+        val storedBase = if (baseline === rr) storedRr else runCatching { baseline.copyToTempFile() ?: baseline }.getOrDefault(baseline)
+        return AuthzResult(url, variant, status, body.length, hash, same, flagged, "$note. $interpretation$verdictText", storedRr, storedBase, expectation, verdict)
     }
 
     private fun substituteIdentifiers(

@@ -45,10 +45,10 @@ class TelemetryTableModel : AbstractTableModel() {
     private val cols = arrayOf("#", "Time", "Type", "Frame", "PC", "Private", "Summary")
     private val rows = ArrayList<TelemetryEvent>()
     private val seq = AtomicLong(0)
-    private val archive = CopyOnWriteArrayList<TelemetryEvent>()
+    private val archive = ArrayDeque<TelemetryEvent>(1024)
     private val listeners = CopyOnWriteArrayList<(TelemetryEvent) -> Unit>()
 
-    fun snapshot(): List<TelemetryEvent> = archive.toList()
+    fun snapshot(): List<TelemetryEvent> = synchronized(archive) { archive.toList() }
 
     fun nextSeq(): Long = seq.incrementAndGet()
 
@@ -56,9 +56,16 @@ class TelemetryTableModel : AbstractTableModel() {
     fun onEvent(listener: (TelemetryEvent) -> Unit) { listeners += listener }
 
     fun add(event: TelemetryEvent) {
-        archive.add(event)
+        synchronized(archive) {
+            while (archive.size >= MAX_EVENTS) archive.removeFirst()
+            archive.addLast(event)
+        }
         listeners.forEach { runCatching { it(event) } }
         SwingUtilities.invokeLater {
+            while (rows.size >= MAX_EVENTS) {
+                rows.removeAt(0)
+                fireTableRowsDeleted(0, 0)
+            }
             rows.add(event)
             fireTableRowsInserted(rows.size - 1, rows.size - 1)
         }
@@ -67,12 +74,16 @@ class TelemetryTableModel : AbstractTableModel() {
     fun eventAt(index: Int): TelemetryEvent? = rows.getOrNull(index)
 
     fun clearAll() {
-        archive.clear()
+        synchronized(archive) { archive.clear() }
         SwingUtilities.invokeLater {
             val n = rows.size
             rows.clear()
             if (n > 0) fireTableRowsDeleted(0, n - 1)
         }
+    }
+
+    companion object {
+        const val MAX_EVENTS = 10_000
     }
 
     override fun getRowCount(): Int = rows.size

@@ -102,7 +102,7 @@ class AssessmentPanel(private val config: ConfigStore, private val controller: A
         config.save(cfg.copy(protocolScan = protocol, assessment = assessment))
         shown = definitions(); model.fireTableDataChanged(); status.text = "Inputs saved. ${shown.size} checks have extension backends."; true
     } catch (e: Exception) { status.text = "Inputs not saved: ${e.message}"; false }
-    private fun append(line: String) = SwingUtilities.invokeLater { results.text += "$line\n"; status.text = line; status.toolTipText = line; model.fireTableDataChanged() }
+    private fun append(line: String) = SwingUtilities.invokeLater { results.text += "$line\n"; status.text = line; status.toolTipText = UiKit.safeToolTip(line); model.fireTableDataChanged() }
     private fun run(resume: Boolean) = background {
         controller.run(retryIncomplete = resume) { append(it) }
     }
@@ -110,18 +110,21 @@ class AssessmentPanel(private val config: ConfigStore, private val controller: A
         if (worker?.isAlive == true || !save()) return
         listOf(runButton, resumeButton).forEach { it.isEnabled = false }
         worker = Thread({
-            runCatching(action).onFailure { append(it.message.orEmpty()) }
-            SwingUtilities.invokeLater { listOf(runButton, resumeButton).forEach { it.isEnabled = true } }
+            try {
+                runCatching(action).onFailure { UiKit.logError(it); append(it.message.orEmpty()) }
+            } finally {
+                SwingUtilities.invokeLater { listOf(runButton, resumeButton).forEach { it.isEnabled = true } }
+            }
         }, "webrtc-security-checks").apply { isDaemon = true; start() }
     }
     private fun export() {
         val chooser = JFileChooser().apply { selectedFile = File("rtc-results.json") }
-        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION)
+        if (chooser.showSaveDialog(UiKit.parentWindow(this)) == JFileChooser.APPROVE_OPTION)
             runCatching { chooser.selectedFile.writeText(controller.store.exportJson(), Charsets.UTF_8); status.text = "Exported results with full evidence and credentials" }.onFailure { status.text = it.message }
     }
     private fun import() {
         val chooser = JFileChooser()
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) runCatching {
+        if (chooser.showOpenDialog(UiKit.parentWindow(this)) == JFileChooser.APPROVE_OPTION) runCatching {
             require(chooser.selectedFile.length() <= 16_000_000) { "Import exceeds 16 MB" }
             val count = controller.store.importJson(chooser.selectedFile.readText(Charsets.UTF_8))
             status.text = "Imported $count results; no tests were executed by import"; model.fireTableDataChanged()

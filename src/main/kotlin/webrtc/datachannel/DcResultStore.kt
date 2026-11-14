@@ -26,6 +26,7 @@ class DcResultStore(
     private val engagement: () -> String = { "" }
 ) {
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+    private val prettyJson = Json { prettyPrint = true; encodeDefaults = true }
     private val runs = mutableListOf<DcRun>()
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<(DcRun) -> Unit>()
 
@@ -62,7 +63,7 @@ class DcResultStore(
         listeners.forEach { runCatching { it(run) } }
     }
 
-    fun exportJson(run: DcRun? = latest()): String = Json { prettyPrint = true; encodeDefaults = true }.encodeToString(run)
+    fun exportJson(run: DcRun? = latest()): String = prettyJson.encodeToString(run)
 
     /** DCH-01 (discovery/binary), DCH-02 (authorization/replay), DCH-03 (load/churn) registry outcomes. */
     private fun rollUp(run: DcRun) {

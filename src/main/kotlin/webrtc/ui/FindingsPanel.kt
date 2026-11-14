@@ -4,9 +4,7 @@ import webrtc.config.ConfigStore
 import webrtc.telemetry.TelemetryTableModel
 import webrtc.workflow.RunAllController
 import webrtc.report.PentestReport
-import webrtc.BuildInfo
 import java.awt.BorderLayout
-import java.awt.FlowLayout
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -60,31 +58,31 @@ class FindingsPanel(
         if (!generated || report.text.isBlank()) generate()
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
         val chooser = JFileChooser().apply {
-            selectedFile = File("webrtc-findings-$stamp.md")
+            selectedFile = File("burprtc-findings-$stamp.md")
             dialogTitle = "Save findings report"
         }
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
+        if (chooser.showSaveDialog(UiKit.parentWindow(this)) != JFileChooser.APPROVE_OPTION) return
         try {
             chooser.selectedFile.writeText(report.text)
             status.text = "saved ${chooser.selectedFile.name}"
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, e.message, "Could not save report", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "Could not save report", JOptionPane.ERROR_MESSAGE)
         }
     }
 
     private fun exportCsv() {
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
         val chooser = JFileChooser().apply {
-            selectedFile = File("webrtc-summary-$stamp.csv")
+            selectedFile = File("burprtc-summary-$stamp.csv")
             dialogTitle = "Export concise pentest summary"
         }
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
+        if (chooser.showSaveDialog(UiKit.parentWindow(this)) != JFileChooser.APPROVE_OPTION) return
         try {
             val concise = summary()
             chooser.selectedFile.writeText(concise.csv(), Charsets.UTF_8)
             status.text = "exported ${concise.facts.size} concise items"
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, e.message, "Could not export telemetry CSV", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "Could not export telemetry CSV", JOptionPane.ERROR_MESSAGE)
         }
     }
 

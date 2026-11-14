@@ -36,7 +36,7 @@ class BridgeServer(
         try {
             val srv = BridgeHttpServer(
                 InetSocketAddress(cfg.bridgeHost, cfg.bridgePort),
-                onError = { api.logging().logToError("[bridge] handler error: ${it.message}") }
+                onError = { api.logging().logToError("[bridge] handler error: ${it.stackTraceToString()}") }
             ) { request ->
                 val token = parameter(request, "session").orEmpty()
                 val origin = request.headers["origin"].orEmpty()
@@ -46,7 +46,7 @@ class BridgeServer(
                     return@BridgeHttpServer BridgeHttpServer.Response(403)
                 when (request.path) {
                     cfg.collectPath -> {
-                        if (request.method == "OPTIONS") BridgeHttpServer.Response(204)
+                        if (request.method.equals("OPTIONS", true)) BridgeHttpServer.Response(204)
                         else if (request.method == "POST" && parseAndStore(request.body, token, origin)) BridgeHttpServer.Response(204)
                         else BridgeHttpServer.Response(403)
                     }
@@ -60,7 +60,7 @@ class BridgeServer(
             server = srv
             api.logging().logToOutput("[bridge] listening on http://${cfg.bridgeHost}:${cfg.bridgePort}")
         } catch (t: Throwable) {
-            api.logging().logToError("[bridge] failed to start on ${cfg.bridgeHost}:${cfg.bridgePort}: ${t.message}")
+            api.logging().logToError("[bridge] failed to start on ${cfg.bridgeHost}:${cfg.bridgePort}: ${t.stackTraceToString()}")
         }
     }
 

@@ -39,7 +39,7 @@ class CanaryRegistry(
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val canaries = LinkedHashMap<String, Canary>()
-    private val reported = HashSet<String>()
+    private val reported = LinkedHashSet<String>()
     private val random = SecureRandom()
     private val alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -66,7 +66,11 @@ class CanaryRegistry(
     }
 
     @Synchronized fun clear() { canaries.clear(); reported.clear(); persist() }
-    @Synchronized private fun firstReport(key: String): Boolean = reported.add(key)
+    @Synchronized private fun firstReport(key: String): Boolean {
+        if (!reported.add(key)) return false
+        while (reported.size > 10_000) reported.remove(reported.first())
+        return true
+    }
 
     private fun persist() = runCatching { save(json.encodeToString(canaries.values.toList())) }
 

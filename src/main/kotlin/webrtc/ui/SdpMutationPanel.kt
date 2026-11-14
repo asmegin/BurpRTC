@@ -33,7 +33,7 @@ class SdpMutationPanel(private val store: ConfigStore, telemetry: TelemetryTable
     private val after = SearchableTextPane("After")
     private val detail = SearchableTextPane(wrap = true)
     private var loading = false
-    private val saveDebounce = Timer(350) { save() }.apply { isRepeats = false }
+    private val saveDebounce = UiKit.registerTimer(Timer(350) { save() }.apply { isRepeats = false })
 
     init {
         store.onChange { cfg -> SwingUtilities.invokeLater { enabled.isSelected = cfg.sdpMutation.enabled } }

@@ -1,1 +1,1 @@
-rootProject.name = "webrtc-testsuite"
+rootProject.name = "burprtc"

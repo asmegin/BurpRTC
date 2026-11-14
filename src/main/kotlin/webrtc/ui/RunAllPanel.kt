@@ -77,6 +77,7 @@ class RunAllPanel(private val orchestrator: RunAllController, private val store:
             try {
                 orchestrator.run(plan) { line -> SwingUtilities.invokeLater { append(line) } }
             } catch (t: Throwable) {
+                UiKit.logError(t)
                 SwingUtilities.invokeLater { append(RunAllController.Line(RunAllController.Level.WARN, "Run failed: ${t.message}")) }
             } finally {
                 SwingUtilities.invokeLater {

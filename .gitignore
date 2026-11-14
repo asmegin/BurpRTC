@@ -1,12 +1,19 @@
 # Build output and caches
 build/
+bin/
+dist/
 .gradle/
 .kotlin/
 __pycache__/
 *.pyc
 
-# Local contributor notes — not published to the repository
+# Local contributor notes and private lab harness — not published to the public repository
 AGENTS.md
+PLAN.MD
+TODO.md
+docs/
+.kilo/
+lab/
 
 # IDE / OS
 .idea/

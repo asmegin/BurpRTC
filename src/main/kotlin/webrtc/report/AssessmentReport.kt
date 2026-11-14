@@ -21,6 +21,8 @@ object EvidenceFormatting {
 }
 
 object AssessmentReport {
+    private val prettyJson = Json { prettyPrint = true; encodeDefaults = true }
+
     fun markdown(config: AssessmentConfig, outcomes: List<TestOutcome>, evidence: Boolean = false): String = buildString {
         appendLine("## Security checks and outcomes"); appendLine()
         appendLine("Checks with extension backends and recorded results. Execution and security outcomes are separate; missing prerequisites are not completed tests.")
@@ -41,7 +43,7 @@ object AssessmentReport {
         }
         if (evidence) {
             appendLine(); appendLine("## Exact assessment evidence"); appendLine()
-            outcomes.forEach { appendLine(EvidenceFormatting.code(Json { prettyPrint = true; encodeDefaults = true }.encodeToString(it))) }
+            outcomes.forEach { appendLine(EvidenceFormatting.code(prettyJson.encodeToString(it))) }
         }
     }
 }

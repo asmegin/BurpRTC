@@ -12,6 +12,22 @@ import javax.swing.text.JTextComponent
 
 /** Local styling only: never changes Burp's global look-and-feel or UI defaults. */
 object UiKit {
+    @Volatile var suiteFrame: Frame? = null
+    @Volatile var errorLogger: ((Throwable) -> Unit)? = null
+    private val timers = java.util.concurrent.CopyOnWriteArrayList<Timer>()
+
+    fun registerTimer(timer: Timer): Timer = timer.also { timers += it }
+    fun stopAllTimers() { timers.forEach { runCatching { it.stop() } }; timers.clear() }
+    fun logError(t: Throwable) { errorLogger?.let { runCatching { it(t) } } }
+    fun parentWindow(component: Component? = null): Component? =
+        component?.let { SwingUtilities.getWindowAncestor(it) } ?: suiteFrame ?: component
+    /** Neutralize Swing BasicHTML auto-rendering on untrusted strings in tooltips. */
+    fun safeToolTip(value: Any?): String? {
+        val s = value?.toString()?.takeIf { it.isNotEmpty() } ?: return null
+        val clipped = if (s.length > 512) s.take(512) + "…" else s
+        return if (clipped.trimStart().startsWith("<html", ignoreCase = true)) "\u200B$clipped" else clipped
+    }
+
     private val base get() = UIManager.getColor("Panel.background") ?: Color.WHITE
     val dark get() = base.red + base.green + base.blue < 390
     val canvas get() = if (dark) Color(0x242932) else Color(0xF4F6FA)
@@ -90,7 +106,7 @@ object UiKit {
         addActionListener { menu.show(this, 0, height) }
     }
     fun refreshWhileShowing(panel: JPanel, refresh: () -> Unit) {
-        val timer = Timer(2000) { refresh() }
+        val timer = registerTimer(Timer(2000) { refresh() })
         panel.addHierarchyListener { event ->
             if (event.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
                 if (panel.isShowing) { refresh(); timer.start() } else timer.stop()
@@ -159,7 +175,7 @@ object UiKit {
                             super.getListCellRendererComponent(list, value, index, selected, focus)
                             if (value == null) text = root.getClientProperty("webrtc.emptyText")?.toString().orEmpty()
                             font = this@UiKit.font; foreground = ink; background = if (selected) tint else surface
-                            border = BorderFactory.createEmptyBorder(5, 8, 5, 8); toolTipText = value?.toString()
+                            border = BorderFactory.createEmptyBorder(5, 8, 5, 8); toolTipText = safeToolTip(value)
                             return this
                         }
                     }
@@ -197,7 +213,7 @@ object UiKit {
                 border = BorderFactory.createCompoundBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, line), BorderFactory.createEmptyBorder(0, 10, 0, 10))
                 val key = table.rowSorter?.sortKeys?.firstOrNull { it.column == table.convertColumnIndexToModel(column) }
                 icon = when (key?.sortOrder) { SortOrder.ASCENDING -> UIManager.getIcon("Table.ascendingSortIcon"); SortOrder.DESCENDING -> UIManager.getIcon("Table.descendingSortIcon"); else -> null }
-                horizontalTextPosition = SwingConstants.LEFT; toolTipText = text
+                horizontalTextPosition = SwingConstants.LEFT; toolTipText = safeToolTip(text)
             }
         }
         val renderer = object : DefaultTableCellRenderer() {
@@ -205,7 +221,7 @@ object UiKit {
                 super.getTableCellRendererComponent(t, value, selected, focus, row, col)
                 border = BorderFactory.createEmptyBorder(0, 10, 0, 10)
                 background = if (selected) tint else if (row % 2 == 0) surface else canvas
-                foreground = ink; toolTipText = value?.toString()
+                foreground = ink; toolTipText = safeToolTip(value)
                 return this
             }
         }
@@ -223,7 +239,7 @@ object UiKit {
             table.rowHeight = (table.getClientProperty("webrtc.rowHeight") as? Int) ?: 64
             val wrap = JTextArea().apply { lineWrap = true; wrapStyleWord = true; font = this@UiKit.font; border = BorderFactory.createEmptyBorder(7, 10, 7, 10) }
             val wrapRenderer = javax.swing.table.TableCellRenderer { _, value, selected, _, row, _ ->
-                wrap.apply { text = value?.toString().orEmpty(); foreground = ink; background = if (selected) tint else if (row % 2 == 0) surface else canvas; toolTipText = text }
+                wrap.apply { text = value?.toString().orEmpty(); foreground = ink; background = if (selected) tint else if (row % 2 == 0) surface else canvas; toolTipText = safeToolTip(text) }
             }
             wrapped.filterIsInstance<Int>().forEach { table.columnModel.getColumn(it).cellRenderer = wrapRenderer }
         }

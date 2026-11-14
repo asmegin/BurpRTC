@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 /** Small HTTP/1.x transport using only java.base; Burp may omit jdk.httpserver. */
 internal class BridgeHttpServer(
     address: InetSocketAddress,
-    private val onError: (Exception) -> Unit,
+    private val onError: (Throwable) -> Unit,
     private val handler: (Request) -> Response
 ) : Closeable {
     data class Request(val method: String, val path: String, val body: String, val query: String? = null, val headers: Map<String, String> = emptyMap())
@@ -47,7 +47,7 @@ internal class BridgeHttpServer(
         while (!closed) {
             val client = try {
                 listener.accept()
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (!closed) {
                     onError(e)
                     close()
@@ -90,7 +90,7 @@ internal class BridgeHttpServer(
                     Response(e.code)
                 } catch (_: SocketTimeoutException) {
                     Response(408)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     if (!closed) onError(e)
                     Response(500)
                 }
@@ -218,6 +218,7 @@ internal class BridgeHttpServer(
             append("Access-Control-Allow-Origin: *\r\n")
             append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
             append("Access-Control-Allow-Headers: Content-Type\r\n")
+            append("Access-Control-Allow-Private-Network: true\r\n")
             append("Content-Type: ${response.contentType}; charset=utf-8\r\n")
             if (response.code != 204) append("Content-Length: ${bytes.size}\r\n")
             append("Cache-Control: no-store\r\n")

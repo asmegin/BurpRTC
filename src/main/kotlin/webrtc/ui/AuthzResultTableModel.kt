@@ -10,12 +10,19 @@ class AuthzResultTableModel : AbstractTableModel() {
 
     fun add(result: AuthzResult) {
         SwingUtilities.invokeLater {
-            val index = synchronized(rows) { rows.add(result); rows.size - 1 }
-            fireTableRowsInserted(index, index)
+            synchronized(rows) {
+                while (rows.size >= MAX_RESULTS) {
+                    rows.removeAt(0)
+                    fireTableRowsDeleted(0, 0)
+                }
+                rows.add(result)
+                val index = rows.size - 1
+                fireTableRowsInserted(index, index)
+            }
         }
     }
 
-    fun resultAt(index: Int): AuthzResult? = rows.getOrNull(index)
+    fun resultAt(index: Int): AuthzResult? = synchronized(rows) { rows.getOrNull(index) }
 
     fun snapshot(): List<AuthzResult> = synchronized(rows) { rows.toList() }
 
@@ -26,14 +33,14 @@ class AuthzResultTableModel : AbstractTableModel() {
         }
     }
 
-    override fun getRowCount(): Int = rows.size
+    override fun getRowCount(): Int = synchronized(rows) { rows.size }
     override fun getColumnCount(): Int = cols.size
     override fun getColumnName(c: Int): String = cols[c]
     override fun getColumnClass(c: Int): Class<*> = if (c in 3..4) java.lang.Integer::class.java else String::class.java
     override fun isCellEditable(r: Int, c: Int): Boolean = false
 
     override fun getValueAt(r: Int, c: Int): Any {
-        val e = rows[r]
+        val e = synchronized(rows) { rows[r] }
         return when (c) {
             0 -> if (e.verdict == AuthzResult.LIKELY_VIOLATION) "⛔" else if (e.flagged) "⚠" else ""
             1 -> e.verdict
@@ -44,5 +51,9 @@ class AuthzResultTableModel : AbstractTableModel() {
             6 -> e.baselineUrl
             else -> e.note
         }
+    }
+
+    companion object {
+        const val MAX_RESULTS = 2_000
     }
 }

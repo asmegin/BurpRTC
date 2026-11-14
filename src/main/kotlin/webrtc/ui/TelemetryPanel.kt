@@ -75,14 +75,14 @@ class TelemetryPanel(
     private fun captureStats(active: ActiveTestController) {
         val agent = active.agents().lastOrNull()
         if (agent == null) {
-            JOptionPane.showMessageDialog(this, "No live browser page is reporting. Browse the app through Burp and join a call first.", "Capture stats", JOptionPane.INFORMATION_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), "No live browser page is reporting. Browse the app through Burp and join a call first.", "Capture stats", JOptionPane.INFORMATION_MESSAGE)
             return
         }
         try {
             val id = active.queueCaptureStats(agent.id)
             detail.text = "Queued getStats capture ${id.take(8)} for ${agent.frame}; results arrive as stats-snapshot / dtls-cert events."
         } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, e.message, "Capture stats", JOptionPane.ERROR_MESSAGE)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), e.message, "Capture stats", JOptionPane.ERROR_MESSAGE)
         }
     }
 
@@ -100,45 +100,50 @@ class TelemetryPanel(
      */
     private fun importDump() {
         val chooser = JFileChooser().apply { dialogTitle = "Import chrome://webrtc-internals dump (.gz, JSON or text)" }
-        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return
+        if (chooser.showOpenDialog(UiKit.parentWindow(this)) != JFileChooser.APPROVE_OPTION) return
         val file = chooser.selectedFile
-        val dump = try {
-            InternalsDump.read(file)
-        } catch (e: Exception) {
-            JOptionPane.showMessageDialog(this, e.message, "Could not read dump", JOptionPane.ERROR_MESSAGE)
-            return
-        }
+        Thread({
+            try {
+                val dump = InternalsDump.read(file)
+                val lines = InternalsComparator.compare(dump, model.snapshot())
+                val time = LocalTime.now().format(timeFmt)
 
-        val lines = InternalsComparator.compare(dump, model.snapshot())
-        val time = LocalTime.now().format(timeFmt)
+                val importSummary = "imported ${file.name}: ${dump.candidates.size} candidate(s), " +
+                    "${dump.codecs.size} codec(s), ${dump.dtlsCiphers.size + dump.srtpCiphers.size} cipher(s)"
+                model.add(
+                    TelemetryEvent(
+                        seq = model.nextSeq(), time = time, type = "internals-import", frame = "import",
+                        pcId = "", private = false, summary = importSummary,
+                        raw = buildJsonObject { put("type", "internals-import"); put("source", file.name) }.toString()
+                    )
+                )
+                val summary = lines.firstOrNull { it.level == InternalsComparator.Level.FINDING }
+                    ?: lines.firstOrNull { it.level == InternalsComparator.Level.WARN }
+                    ?: InternalsComparator.Line(InternalsComparator.Level.OK, "no discrepancies")
+                model.add(
+                    TelemetryEvent(
+                        seq = model.nextSeq(), time = time, type = "internals-comparison", frame = "import",
+                        pcId = "", private = false, summary = summary.text,
+                        raw = InternalsComparator.encodeLines(lines)
+                    )
+                )
 
-        val importSummary = "imported ${file.name}: ${dump.candidates.size} candidate(s), " +
-            "${dump.codecs.size} codec(s), ${dump.dtlsCiphers.size + dump.srtpCiphers.size} cipher(s)"
-        model.add(
-            TelemetryEvent(
-                seq = model.nextSeq(), time = time, type = "internals-import", frame = "import",
-                pcId = "", private = false, summary = importSummary,
-                raw = buildJsonObject { put("type", "internals-import"); put("source", file.name) }.toString()
-            )
-        )
-        val summary = lines.firstOrNull { it.level == InternalsComparator.Level.FINDING }
-            ?: lines.firstOrNull { it.level == InternalsComparator.Level.WARN }
-            ?: InternalsComparator.Line(InternalsComparator.Level.OK, "no discrepancies")
-        model.add(
-            TelemetryEvent(
-                seq = model.nextSeq(), time = time, type = "internals-comparison", frame = "import",
-                pcId = "", private = false, summary = summary.text,
-                raw = InternalsComparator.encodeLines(lines)
-            )
-        )
-
-        val area = JTextArea(lines.joinToString("\n") { "[${it.level}] ${it.text}" }, 18, 96).apply {
-            isEditable = false; lineWrap = true; wrapStyleWord = true; caretPosition = 0
-        }
-        JOptionPane.showMessageDialog(
-            this, JScrollPane(area),
-            "chrome://webrtc-internals comparison — ${file.name}",
-            JOptionPane.INFORMATION_MESSAGE
-        )
+                SwingUtilities.invokeLater {
+                    val area = JTextArea(lines.joinToString("\n") { "[${it.level}] ${it.text}" }, 18, 96).apply {
+                        isEditable = false; lineWrap = true; wrapStyleWord = true; caretPosition = 0
+                    }
+                    JOptionPane.showMessageDialog(
+                        UiKit.parentWindow(this@TelemetryPanel), JScrollPane(area),
+                        "chrome://webrtc-internals comparison — ${file.name}",
+                        JOptionPane.INFORMATION_MESSAGE
+                    )
+                }
+            } catch (e: Throwable) {
+                UiKit.logError(e)
+                SwingUtilities.invokeLater {
+                    JOptionPane.showMessageDialog(UiKit.parentWindow(this@TelemetryPanel), e.message, "Could not read dump", JOptionPane.ERROR_MESSAGE)
+                }
+            }
+        }, "webrtc-internals-import").apply { isDaemon = true; start() }
     }
 }

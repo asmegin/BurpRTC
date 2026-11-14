@@ -1,5 +1,5 @@
 /*
- * WebRTC Test Suite — generic browser agent (client-agnostic).
+ * BurpRTC — generic browser agent (client-agnostic).
  * Hooks the standard W3C WebRTC API so it works on any WebRTC app regardless
  * of framework or signaling. Injected into the top page and every iframe by the
  * Burp extension's M1 injector. Config arrives via window.__WRTC_CFG__.
@@ -14,7 +14,7 @@
   var COLLECT = CFG.collect;
   var COMMAND = CFG.command;
   var FRAME = (function () { try { return location.href; } catch (e) { return "frame"; } })();
-  var AGENT_VERSION = "1.3.1";
+  var AGENT_VERSION = "1.3.2";
   var AGENT_ID = "agent-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   var NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   var NativeWebSocket = typeof window.WebSocket === "function" ? window.WebSocket : null;
@@ -121,6 +121,7 @@
   }
 
   function learnKey(key) {
+    if (Object.keys(learnedCounts).length > 256) learnedCounts = {};
     learnedCounts[key] = (learnedCounts[key] || 0) + 1;
     return learnedCounts[key] <= 8;
   }
@@ -394,7 +395,10 @@
       for (var j = 0; j < observedIceServers.length; j++) {
         if (safeJson(observedIceServers[j]) === key) { seen = true; break; }
       }
-      if (!seen) observedIceServers.push(entry);
+      if (!seen) {
+        if (observedIceServers.length >= 64) observedIceServers.shift();
+        observedIceServers.push(entry);
+      }
     }
   }
 

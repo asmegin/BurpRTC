@@ -11,15 +11,20 @@ import java.time.Instant
 class OutcomeStore(private val api: MontoyaApi, private val telemetry: TelemetryTableModel, private val engagement: () -> String) {
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = false }
     private val outcomes = linkedMapOf<String, TestOutcome>()
+    @Volatile private var cachedList: List<TestOutcome> = emptyList()
     private val key = "webrtc.assessment.results.v1"
     init {
         runCatching { api.persistence().extensionData().getString(key)?.let { json.decodeFromString<List<TestOutcome>>(it) } }
             .getOrNull().orEmpty().takeLast(1000).forEach { outcome ->
                 runCatching { outcome.validate(); if (outcome.engagementId == engagement()) outcomes[resultKey(outcome)] = outcome }
             }
+        cachedList = outcomes.values.toList()
     }
     private fun resultKey(o: TestOutcome) = listOf(o.engagementId, o.runId, o.testId, o.target).joinToString("\u0000")
-    @Synchronized fun snapshot(): List<TestOutcome> = outcomes.values.filter { it.engagementId == engagement() }
+    fun snapshot(): List<TestOutcome> {
+        val currentEngagement = engagement()
+        return cachedList.filter { it.engagementId == currentEngagement }
+    }
     @Synchronized fun add(outcome: TestOutcome) {
         outcome.validate()
         require(outcome.engagementId == engagement()) { "Evidence belongs to another engagement" }
@@ -28,6 +33,7 @@ class OutcomeStore(private val api: MontoyaApi, private val telemetry: Telemetry
         // Enforce a project persistence budget without silently truncating individual evidence.
         var encoded = json.encodeToString(outcomes.values.toList())
         while (encoded.length > 16_000_000 && outcomes.size > 1) { outcomes.remove(outcomes.keys.first()); encoded = json.encodeToString(outcomes.values.toList()) }
+        cachedList = outcomes.values.toList()
         api.persistence().extensionData().setString(key, encoded)
         val detail = "${outcome.testId}: ${outcome.execution}; security=${outcome.security}; ${outcome.target}"
         telemetry.add(TelemetryEvent(telemetry.nextSeq(), Instant.now().toString(), "assessment-result", outcome.target, "", false, detail,

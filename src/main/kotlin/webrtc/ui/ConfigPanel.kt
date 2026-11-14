@@ -44,7 +44,7 @@ class ConfigPanel(
     private val identifierKeys = JTextArea(3, 40)
     private val status = JLabel(" ")
     private var loading = false
-    private val debounce = Timer(350) { save() }.apply { isRepeats = false }
+    private val debounce = UiKit.registerTimer(Timer(350) { save() }.apply { isRepeats = false })
 
     private val advancedPanel = JPanel(GridBagLayout())
 
@@ -202,7 +202,7 @@ class ConfigPanel(
 
     private fun browseAgent() {
         val chooser = JFileChooser()
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+        if (chooser.showOpenDialog(UiKit.parentWindow(this)) == JFileChooser.APPROVE_OPTION) {
             agentJsPath.text = chooser.selectedFile.absolutePath
         }
     }
@@ -245,10 +245,13 @@ class ConfigPanel(
             }.getOrElse { warnings += "Identities JSON unfinished; keeping last valid identities"; previous.identities }
             val port = bridgePort.text.trim().toIntOrNull()?.takeIf { it in 1..65535 }
                 ?: previous.bridgePort.also { warnings += "Invalid bridge port; keeping $it" }
+            val requestedHost = bridgeHost.text.trim().ifBlank { "127.0.0.1" }
+            val validHost = requestedHost.takeIf { it.lowercase() in setOf("127.0.0.1", "localhost", "::1", "[::1]") }
+                ?: previous.bridgeHost.also { warnings += "Bridge host must be loopback (127.0.0.1 / localhost); keeping $it" }
             val cfg = previous.copy(
                 injectionEnabled = injectionEnabled.isSelected, stripCsp = stripCsp.isSelected, burpIssues = burpIssues.isSelected,
                 hostAllowList = lines(hostAllowList.text),
-                bridgeHost = bridgeHost.text.trim().ifBlank { "127.0.0.1" }, bridgePort = port,
+                bridgeHost = validHost, bridgePort = port,
                 collectPath = collectPath.text.trim().ifBlank { "/collect" }, commandPath = commandPath.text.trim().ifBlank { "/command" },
                 agentJsPath = agentJsPath.text.trim(), identities = identities, identifierKeys = lines(identifierKeys.text)
             )
@@ -257,7 +260,7 @@ class ConfigPanel(
                 listOf(cfg.bridgeHost, cfg.bridgePort, cfg.collectPath, cfg.commandPath)) onSaved()
             status.text = if (warnings.isEmpty()) "Saved automatically" else "Saved other settings. ${warnings.joinToString("; ")}"
         } catch (t: Exception) {
-            api.logging().logToError("[config] autosave failed: ${t.message}")
+            api.logging().logToError("[config] autosave failed: ${t.stackTraceToString()}")
             status.text = "Not saved: ${t.message}"
         }
     }
@@ -272,9 +275,12 @@ class ConfigPanel(
 
         val hosts = lines(hostAllowList.text)
         val port = bridgePort.text.trim().toIntOrNull()
+        val host = bridgeHost.text.trim().ifBlank { "127.0.0.1" }
 
         if (injectionEnabled.isSelected && hosts.isEmpty())
             problems += "Injection is ON but the host allow-list is empty, so nothing will be injected. Add the app's hostname (or 'all')."
+        if (host.lowercase() !in setOf("127.0.0.1", "localhost", "::1", "[::1]"))
+            problems += "Bridge host must be a loopback address (127.0.0.1 or localhost) so the local bridge is not exposed to the network."
         if (port == null || port !in 1..65535)
             problems += "Bridge port must be a whole number between 1 and 65535."
         val idErr = runCatching {
@@ -297,7 +303,7 @@ class ConfigPanel(
         if (clean && notes.isEmpty()) {
             status.text = "configuration OK"
             if (showIfClean)
-                JOptionPane.showMessageDialog(this, "Configuration looks good.", "Check configuration", JOptionPane.INFORMATION_MESSAGE)
+                JOptionPane.showMessageDialog(UiKit.parentWindow(this), "Configuration looks good.", "Check configuration", JOptionPane.INFORMATION_MESSAGE)
             return true
         }
 
@@ -314,7 +320,7 @@ class ConfigPanel(
                 }
             }
             val kind = if (clean) JOptionPane.INFORMATION_MESSAGE else JOptionPane.WARNING_MESSAGE
-            JOptionPane.showMessageDialog(this, msg.trimEnd(), "Check configuration", kind)
+            JOptionPane.showMessageDialog(UiKit.parentWindow(this), msg.trimEnd(), "Check configuration", kind)
             status.text = if (clean) "configuration OK (see notes)" else "configuration needs attention"
         }
         return clean
