@@ -14,7 +14,7 @@
   var COLLECT = CFG.collect;
   var COMMAND = CFG.command;
   var FRAME = (function () { try { return location.href; } catch (e) { return "frame"; } })();
-  var AGENT_VERSION = "1.3.2";
+  var AGENT_VERSION = "1.3.3";
   var AGENT_ID = "agent-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
   var NativePeerConnection = window.RTCPeerConnection || window.webkitRTCPeerConnection;
   var NativeWebSocket = typeof window.WebSocket === "function" ? window.WebSocket : null;

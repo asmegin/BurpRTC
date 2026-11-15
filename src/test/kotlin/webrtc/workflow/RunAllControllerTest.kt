@@ -161,11 +161,13 @@ class RunAllControllerTest {
         assertFalse(lines.any { it.level == RunAllController.Level.FINDING })
     }
     private var persisted: String? = null
+    // Per-installation preferences (local program paths) are stored apart from the project.
+    private val preferences = HashMap<String, String>()
     private fun api(): MontoyaApi {
         fun proxy(type: Class<*>): Any = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
             when {
-                method.name == "getString" -> persisted
-                method.name == "setString" -> { persisted = args!![1] as String; null }
+                method.name == "getString" -> (args!![0] as String).let { if (it.startsWith("burprtc.")) preferences[it] else persisted }
+                method.name == "setString" -> { (args!![0] as String).let { if (it.startsWith("burprtc.")) preferences[it] = args[1] as String else persisted = args[1] as String }; null }
                 method.returnType.isInterface -> proxy(method.returnType)
                 else -> null
             }

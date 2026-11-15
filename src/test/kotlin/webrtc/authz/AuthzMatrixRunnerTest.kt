@@ -12,6 +12,8 @@ import kotlin.test.*
 class AuthzMatrixRunnerTest {
     private class Harness {
         var persisted: String? = null
+        // Per-installation preferences (local program paths) are stored apart from the project.
+        val preferences = HashMap<String, String>()
         var inScope = true
         var sends = 0
         val request = proxy(HttpRequest::class.java) { name -> when (name) {
@@ -25,8 +27,8 @@ class AuthzMatrixRunnerTest {
         } }
         fun apiProxy(type: Class<*>): Any = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
             when (method.name) {
-                "getString" -> persisted
-                "setString" -> { persisted = args!![1] as String; null }
+                "getString" -> (args!![0] as String).let { if (it.startsWith("burprtc.")) preferences[it] else persisted }
+                "setString" -> { (args!![0] as String).let { if (it.startsWith("burprtc.")) preferences[it] = args[1] as String else persisted = args[1] as String }; null }
                 "isInScope" -> inScope
                 "sendRequest" -> { sends++; exchange }
                 else -> if (method.returnType.isInterface) apiProxy(method.returnType) else null

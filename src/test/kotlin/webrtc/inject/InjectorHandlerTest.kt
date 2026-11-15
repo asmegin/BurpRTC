@@ -40,9 +40,14 @@ class InjectorHandlerTest {
         }
     }
 
+    private var tool = burp.api.montoya.core.ToolType.PROXY
+
     private fun response(headers: List<HttpHeader>, body: String = html): HttpResponseReceived =
         proxy(HttpResponseReceived::class.java) { method, args ->
             when (method) {
+                "toolSource" -> proxy(burp.api.montoya.core.ToolSource::class.java) { name, toolArgs ->
+                    if (name == "isFromTool") (toolArgs!![0] as Array<*>).contains(tool) else error(name)
+                }
                 "headers" -> headers
                 "headerValue" -> headers.firstOrNull { it.name().equals(args!![0] as String, true) }?.value()
                 "bodyToString" -> body
@@ -109,6 +114,13 @@ class InjectorHandlerTest {
         assertTrue(agent < out.indexOf("<script src=\"app.js\""))
         val plain = inject(emptyList(), body = "<html><head><title>x</title></head><body><script>a()</script></body></html>").bodyToString()
         assertTrue(plain.indexOf("__WRTC_CFG__") < plain.indexOf("</head>") && plain.indexOf("__WRTC_CFG__") > plain.indexOf("<title>"))
+    }
+
+    @Test fun `responses for Repeater and Scanner are never instrumented`() {
+        tool = burp.api.montoya.core.ToolType.REPEATER
+        val out = inject(listOf("Content-Security-Policy" to "script-src 'none'"))
+        assertFalse(out.bodyToString().contains("__WRTC_CFG__"))
+        assertEquals(listOf("script-src 'none'"), out.headers().filter { it.name() == "Content-Security-Policy" }.map { it.value() })
     }
 
     private fun HttpResponse.values(name: String) = headers().filter { it.name().equals(name, true) }.map { it.value() }

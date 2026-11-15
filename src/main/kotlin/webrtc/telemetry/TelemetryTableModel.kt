@@ -47,6 +47,8 @@ class TelemetryTableModel : AbstractTableModel() {
     private val seq = AtomicLong(0)
     private val archive = ArrayDeque<TelemetryEvent>(1024)
     private val listeners = CopyOnWriteArrayList<(TelemetryEvent) -> Unit>()
+    private var archiveChars = 0L
+    private var rowChars = 0L
 
     fun snapshot(): List<TelemetryEvent> = synchronized(archive) { archive.toList() }
 
@@ -55,18 +57,22 @@ class TelemetryTableModel : AbstractTableModel() {
     /** Called on the adding thread for every new event; listener failures are isolated. */
     fun onEvent(listener: (TelemetryEvent) -> Unit) { listeners += listener }
 
+    private fun size(event: TelemetryEvent) = event.raw.length.toLong() + event.summary.length + event.frame.length
+
     fun add(event: TelemetryEvent) {
+        val size = size(event)
         synchronized(archive) {
-            while (archive.size >= MAX_EVENTS) archive.removeFirst()
-            archive.addLast(event)
+            // Bounded by count and by retained text, so large signaling payloads cannot exhaust Burp's heap.
+            while (archive.isNotEmpty() && (archive.size >= MAX_EVENTS || archiveChars + size > MAX_CHARS)) archiveChars -= size(archive.removeFirst())
+            archive.addLast(event); archiveChars += size
         }
         listeners.forEach { runCatching { it(event) } }
         SwingUtilities.invokeLater {
-            while (rows.size >= MAX_EVENTS) {
-                rows.removeAt(0)
+            while (rows.isNotEmpty() && (rows.size >= MAX_EVENTS || rowChars + size > MAX_CHARS)) {
+                rowChars -= size(rows.removeAt(0))
                 fireTableRowsDeleted(0, 0)
             }
-            rows.add(event)
+            rows.add(event); rowChars += size
             fireTableRowsInserted(rows.size - 1, rows.size - 1)
         }
     }
@@ -74,16 +80,18 @@ class TelemetryTableModel : AbstractTableModel() {
     fun eventAt(index: Int): TelemetryEvent? = rows.getOrNull(index)
 
     fun clearAll() {
-        synchronized(archive) { archive.clear() }
+        synchronized(archive) { archive.clear(); archiveChars = 0 }
         SwingUtilities.invokeLater {
             val n = rows.size
-            rows.clear()
+            rows.clear(); rowChars = 0
             if (n > 0) fireTableRowsDeleted(0, n - 1)
         }
     }
 
     companion object {
         const val MAX_EVENTS = 10_000
+        /** Retained event text, in characters (about 64–128 MiB of heap). */
+        const val MAX_CHARS = 64L * 1024 * 1024
     }
 
     override fun getRowCount(): Int = rows.size

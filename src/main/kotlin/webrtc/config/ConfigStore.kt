@@ -4,7 +4,12 @@ import burp.api.montoya.MontoyaApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 
-/** Persists configuration in the Burp project. Full credentials also appear in telemetry and exports. */
+/**
+ * Persists configuration in the Burp project. Full credentials also appear in telemetry and exports.
+ * Paths to local programs and files (browser, Python, agent override) are kept in Burp's
+ * per-installation preferences instead: a project file received from someone else must not
+ * choose what this machine executes or reads.
+ */
 class ConfigStore(private val api: MontoyaApi) {
     val bridgeSessions = webrtc.bridge.BridgeSessions()
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<(WebRtcConfig) -> Unit>()
@@ -19,13 +24,23 @@ class ConfigStore(private val api: MontoyaApi) {
     }
     private val key = "webrtc.config.v1"
 
+    private fun preference(name: String): String? =
+        runCatching { api.persistence().preferences().getString("burprtc.$name") as? String }.getOrNull()
+    private fun localPaths(cfg: WebRtcConfig) = cfg.copy(
+        agentJsPath = preference("agentJsPath").orEmpty(),
+        tlsScan = cfg.tlsScan.copy(pythonExecutable = preference("pythonExecutable")?.takeIf { it.isNotBlank() } ?: webrtc.tls.TlsScanConfig().pythonExecutable),
+        browserRunner = cfg.browserRunner.copy(browserPath = preference("browserPath").orEmpty()))
+    private fun withoutLocalPaths(cfg: WebRtcConfig) = cfg.copy(agentJsPath = "",
+        tlsScan = cfg.tlsScan.copy(pythonExecutable = webrtc.tls.TlsScanConfig().pythonExecutable),
+        browserRunner = cfg.browserRunner.copy(browserPath = ""))
+
     @Volatile
     var config: WebRtcConfig = load()
         private set
 
     fun load(): WebRtcConfig {
         val raw = api.persistence().extensionData().getString(key)
-        return if (raw.isNullOrBlank()) WebRtcConfig()
+        return localPaths(if (raw.isNullOrBlank()) WebRtcConfig()
         else runCatching {
             json.decodeFromString<WebRtcConfig>(raw).let { decoded ->
                 // ScanPlan existed before there were scan controls. Give those projects
@@ -49,13 +64,19 @@ class ConfigStore(private val api: MontoyaApi) {
             .getOrElse {
                 api.logging().logToError("[config] parse failed, using defaults: ${it.message}")
                 WebRtcConfig()
-            }
+            })
     }
 
     fun save(newConfig: WebRtcConfig) {
         if (newConfig == config) return
         api.persistence().extensionData()
-            .setString(key, json.encodeToString(WebRtcConfig.serializer(), newConfig))
+            .setString(key, json.encodeToString(WebRtcConfig.serializer(), withoutLocalPaths(newConfig)))
+        runCatching {
+            val preferences = api.persistence().preferences()
+            preferences.setString("burprtc.agentJsPath", newConfig.agentJsPath)
+            preferences.setString("burprtc.pythonExecutable", newConfig.tlsScan.pythonExecutable)
+            preferences.setString("burprtc.browserPath", newConfig.browserRunner.browserPath)
+        }
         config = newConfig
         listeners.forEach { listener -> runCatching { listener(newConfig) } }
     }

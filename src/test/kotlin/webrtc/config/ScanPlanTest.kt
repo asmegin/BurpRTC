@@ -9,11 +9,13 @@ import kotlin.test.*
 
 class ScanPlanTest {
     private var persisted: String? = null
+    // Per-installation preferences (local program paths) are stored apart from the project.
+    private val preferences = HashMap<String, String>()
     private fun store(): ConfigStore {
         fun proxy(type: Class<*>): Any = Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
             when {
-                method.name == "getString" -> persisted
-                method.name == "setString" -> { persisted = args!![1] as String; null }
+                method.name == "getString" -> (args!![0] as String).let { if (it.startsWith("burprtc.")) preferences[it] else persisted }
+                method.name == "setString" -> { (args!![0] as String).let { if (it.startsWith("burprtc.")) preferences[it] = args[1] as String else persisted = args[1] as String }; null }
                 method.returnType.isInterface -> proxy(method.returnType)
                 else -> null
             }
@@ -24,6 +26,18 @@ class ScanPlanTest {
         assertTrue(store().config.scanPlan.let { plan -> ScanModule.entries.all { plan.includes(it) } })
         persisted = """{"scanPlan":{"enabled":["passive","stats","ice","sdp","data"]}}"""
         assertEquals(ScanPlan(), store().config.scanPlan)
+    }
+    @Test fun `a project file cannot choose local programs or files`() {
+        persisted = """{"agentJsPath":"C:/secret.txt","tlsScan":{"pythonExecutable":"evil.exe"},"browserRunner":{"browserPath":"evil.exe"}}"""
+        val loaded = store().config
+        assertEquals("", loaded.agentJsPath)
+        assertEquals("python", loaded.tlsScan.pythonExecutable)
+        assertEquals("", loaded.browserRunner.browserPath)
+        val store = store()
+        store.save(store.config.copy(agentJsPath = "C:/agent.js", browserRunner = store.config.browserRunner.copy(browserPath = "C:/chrome.exe")))
+        assertFalse(persisted!!.contains("agent.js") || persisted!!.contains("chrome.exe"))
+        assertEquals("C:/agent.js", store.load().agentJsPath)
+        assertEquals("C:/chrome.exe", store.load().browserRunner.browserPath)
     }
     @Test fun `an explicit empty selection survives project reload`() {
         val store = store()

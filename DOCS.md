@@ -13,11 +13,11 @@ configuration (Module 0), persisted in the Burp project file.
 
 ## Current status
 
-**Version 1.3.2.** `build/libs/burprtc-all.jar` bundles browser agent
-**1.3.2** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
+**Version 1.3.3.** `build/libs/burprtc-all.jar` bundles browser agent
+**1.3.3** and the optional SSLyze adapter. STUN/TURN tests, HTTP/WebSocket
 scenarios, the default TLS engine and the DataChannel runner run on the JVM
 inside Burp; Python is needed only if you choose the SSLyze engine.
-Validated: **208 JVM tests passed**, with two opt-in tests skipped by default (the
+Validated: **212 JVM tests passed**, with two opt-in tests skipped by default (the
 SSLyze integration test and the live browser-runner test), and **55 agent tests**
 passed. The DataChannel runner is tested end to end against simulated pages and a
 simulated bridge.
@@ -32,6 +32,18 @@ Real-browser checks (Microsoft Edge / Chromium):
   evaluate and close.
 
 The runner has not yet been exercised against a live Jitsi / LiveBank deployment.
+
+### 1.3.3 — security hardening
+
+- Captured values are never rendered as HTML in tables, lists or labels.
+- The agent is injected into browser (Proxy) traffic only; Repeater, Scanner,
+  Intruder and other extensions see the application's original response and CSP.
+- Evidence is bounded by retained size as well as by event count.
+- Browser path, Python executable and agent override are stored in Burp's
+  per-installation preferences, not the project file. Re-enter them once after
+  updating.
+- The local bridge refuses to start on a non-loopback address, and each unload
+  step is isolated.
 
 ### 1.3.1 — custom fuzz payloads and DataChannel Burp issues
 

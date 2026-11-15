@@ -54,7 +54,7 @@ object RtcDecoder {
 class RtcCapture(private val config: ConfigStore, private val scope: ScopeGate, private val telemetry: TelemetryTableModel) : WebSocketCreatedHandler {
     var sessions: webrtc.authz.SessionCatalog? = null
     var canaries: webrtc.canary.CanaryRegistry? = null
-    private fun allowed(url: String) = runCatching {
+    fun allowed(url: String) = runCatching {
         ScopeGate.hostAllowed(java.net.URI(url).host, config.config.hostAllowList) && scope.inScope(url)
     }.getOrDefault(false)
     fun record(type: String, url: String, detail: String, data: JsonObject) {

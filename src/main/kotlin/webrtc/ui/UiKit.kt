@@ -28,6 +28,9 @@ object UiKit {
         return if (clipped.trimStart().startsWith("<html", ignoreCase = true)) "\u200B$clipped" else clipped
     }
 
+    /** Captured values reach labels and cells; Swing must never interpret them as HTML (it would fetch remote images). */
+    fun <T : JComponent> plainText(component: T): T = component.apply { putClientProperty("html.disable", true) }
+
     private val base get() = UIManager.getColor("Panel.background") ?: Color.WHITE
     val dark get() = base.red + base.green + base.blue < 390
     val canvas get() = if (dark) Color(0x242932) else Color(0xF4F6FA)
@@ -143,10 +146,13 @@ object UiKit {
                     val layout = root.layout
                     if (layout is FlowLayout && layout !is WrapLayout) root.layout = WrapLayout(FlowLayout.LEFT, 8, 6)
                 }
-                is JLabel -> when (root.getClientProperty("webrtc.role")) {
-                    "heading" -> root.font = font.deriveFont(Font.BOLD, 25f)
-                    "section" -> root.font = font.deriveFont(Font.BOLD, 14f)
-                    "muted" -> root.foreground = muted
+                is JLabel -> {
+                    plainText(root)
+                    when (root.getClientProperty("webrtc.role")) {
+                        "heading" -> root.font = font.deriveFont(Font.BOLD, 25f)
+                        "section" -> root.font = font.deriveFont(Font.BOLD, 14f)
+                        "muted" -> root.foreground = muted
+                    }
                 }
                 is JTextComponent -> {
                     root.background = surface; root.caretColor = ink
@@ -171,6 +177,7 @@ object UiKit {
                 is JComboBox<*> -> {
                     root.background = surface; root.maximumRowCount = 12
                     root.renderer = object : DefaultListCellRenderer() {
+                        init { plainText(this) }
                         override fun getListCellRendererComponent(list: JList<*>?, value: Any?, index: Int, selected: Boolean, focus: Boolean): Component {
                             super.getListCellRendererComponent(list, value, index, selected, focus)
                             if (value == null) text = root.getClientProperty("webrtc.emptyText")?.toString().orEmpty()
@@ -217,6 +224,7 @@ object UiKit {
             }
         }
         val renderer = object : DefaultTableCellRenderer() {
+            init { plainText(this) }
             override fun getTableCellRendererComponent(t: JTable, value: Any?, selected: Boolean, focus: Boolean, row: Int, col: Int): Component {
                 super.getTableCellRendererComponent(t, value, selected, focus, row, col)
                 border = BorderFactory.createEmptyBorder(0, 10, 0, 10)

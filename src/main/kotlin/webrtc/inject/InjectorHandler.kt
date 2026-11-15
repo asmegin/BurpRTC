@@ -63,6 +63,8 @@ class InjectorHandler(
             }
         } }
         capture?.let { observer -> runCatching {
+            // Decide before copying headers or decoding the body: this handler sees every response from every tool.
+            if (!observer.allowed(resp.initiatingRequest().url())) return@runCatching
             val original = kotlinx.serialization.json.buildJsonArray {
                 resp.headers().forEach { header -> add(kotlinx.serialization.json.buildJsonObject {
                     put("name", kotlinx.serialization.json.JsonPrimitive(header.name())); put("value", kotlinx.serialization.json.JsonPrimitive(header.value()))
@@ -71,6 +73,9 @@ class InjectorHandler(
             observer.http(resp.initiatingRequest().url(), resp.bodyToString().take(262145), resp.headerValue("Content-Type").orEmpty(), original)
         } }
         if (!cfg.injectionEnabled) return ResponseReceivedAction.continueWith(resp)
+        // Only the browser's own traffic is instrumented. Repeater, Scanner, Intruder and
+        // other extensions must see the application's real response and CSP.
+        if (!resp.toolSource().isFromTool(burp.api.montoya.core.ToolType.PROXY)) return ResponseReceivedAction.continueWith(resp)
 
         val request = resp.initiatingRequest()
         val host = request.httpService().host()

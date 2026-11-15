@@ -34,8 +34,10 @@ class BridgeServer(
         val cfg = configStore.config
         stop()
         try {
+            // The Setup screen enforces this too; a configuration loaded from a project file has not been through it.
+            require(cfg.bridgeHost.lowercase() in LOOPBACK) { "bridge host must be loopback, not ${cfg.bridgeHost}" }
             val srv = BridgeHttpServer(
-                InetSocketAddress(cfg.bridgeHost, cfg.bridgePort),
+                InetSocketAddress(cfg.bridgeHost.removeSurrounding("[", "]"), cfg.bridgePort),
                 onError = { api.logging().logToError("[bridge] handler error: ${it.stackTraceToString()}") }
             ) { request ->
                 val token = parameter(request, "session").orEmpty()
@@ -182,6 +184,10 @@ class BridgeServer(
 
     private fun JsonObject.strOr(key: String, default: String): String =
         (this[key] as? JsonPrimitive)?.contentOrNull ?: default
+
+    companion object {
+        val LOOPBACK = setOf("127.0.0.1", "localhost", "::1", "[::1]")
+    }
 
 }
 

@@ -79,15 +79,11 @@ class WebRtcExtension : BurpExtension {
 
         bridge.start()
         api.extension().registerUnloadingHandler {
-            poller.shutdownNow()
-            UiKit.stopAllTimers()
-            suiteTab.close()
-            assessments.stop()
-            dcRunner.stop()
-            browserRunner.closeAll()
-            tlsRunner.close()
-            protocolRunner.close()
-            bridge.stop()
+            // Each step is isolated so one failure cannot leave the bridge port bound or a browser running.
+            listOf<() -> Unit>(
+                { poller.shutdownNow() }, { UiKit.stopAllTimers() }, { suiteTab.close() }, { assessments.stop() }, { dcRunner.stop() },
+                { browserRunner.closeAll() }, { tlsRunner.close() }, { protocolRunner.close() }, { bridge.stop() }
+            ).forEach { step -> runCatching(step).onFailure { api.logging().logToError(it.stackTraceToString()) } }
             UiKit.suiteFrame = null
             UiKit.errorLogger = null
         }
